@@ -82,6 +82,7 @@ def main():
     from app.security import issue,hash_password
     db.start();tokens=[];tenant=uuid4()
     with db.connection() as conn:
+        conn.execute('INSERT INTO setapi.organizations(id,name) VALUES(%s,%s)',(tenant,'Load test organization'))
         conn.execute('CREATE TABLE data.load_records(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now(),owner uuid,tenant uuid,title text)')
         tables.manage(conn,'load_records')
         conn.execute("INSERT INTO setapi.policies VALUES('load_records','owner','tenant',%s,%s)",(Jsonb(['id','title','created_at']),Jsonb(['title'])))

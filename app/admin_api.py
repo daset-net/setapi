@@ -6,6 +6,7 @@ from psycopg import sql
 from psycopg.types.json import Jsonb
 from argon2.exceptions import VerificationError
 from . import db, tables, policies
+from .organizations import require_active
 from .config import settings
 from .security import admin, principal, is_admin, allowed, audit, issue, validate_scopes, passwords, DUMMY_HASH, verify_password, hash_password, rate_limit
 
@@ -29,7 +30,7 @@ def login(body: Login, request: Request, response: Response):
 
 @router.get('/auth/me')
 def me(user=Depends(principal)):
-    return {'id': user['id'], 'email': user['email'], 'admin': is_admin(user), 'scopes': user['scopes'], 'mfa_enabled':user['mfa_enabled'], 'audience':user['audience']}
+    return {'id': user['id'], 'email': user['email'], 'admin': is_admin(user), 'scopes': user['scopes'], 'mfa_enabled':user['mfa_enabled'], 'audience':user['audience'], 'organization_id':user['tenant_id']}
 
 
 @router.post('/auth/logout', status_code=204)
@@ -75,10 +76,19 @@ def create_table(body: tables.Table, user=Depends(admin)):
     definitions = [sql.SQL('id uuid PRIMARY KEY DEFAULT gen_random_uuid()'),
                    sql.SQL('created_at timestamptz NOT NULL DEFAULT now()'),
                    sql.SQL('updated_at timestamptz NOT NULL DEFAULT now()')]
+    if body.organization_isolated:
+        if any(c.name=='organization_id' for c in body.columns):raise HTTPException(422,'organization_id is created automatically')
+        definitions.append(sql.SQL('organization_id uuid REFERENCES setapi.organizations(id) ON DELETE RESTRICT'))
     definitions.extend(tables.column_sql(c) for c in body.columns)
     with db.connection() as conn:
         conn.execute(sql.SQL('CREATE TABLE data.{} ({})').format(sql.Identifier(body.name), sql.SQL(',').join(definitions)))
         tables.manage(conn,body.name)
+        if body.organization_isolated:
+            readable=['id','created_at','updated_at']+[c.name for c in body.columns]
+            writable=[c.name for c in body.columns]
+            conn.execute("INSERT INTO setapi.policies VALUES(%s,NULL,'organization_id',%s,%s)",(body.name,Jsonb(readable),Jsonb(writable)))
+            index='so_'+__import__('hashlib').sha256(body.name.encode()).hexdigest()[:20]
+            conn.execute(sql.SQL('CREATE INDEX {} ON data.{} (organization_id,created_at,id)').format(sql.Identifier(index),sql.Identifier(body.name)))
         audit(conn, user, 'table.create', body.name, body.model_dump())
         tables.event(conn, body.name, 'schema', body.name)
     return {'name': body.name, 'endpoint': '/api/data/' + body.name}
@@ -161,11 +171,14 @@ def create_user(body: UserCreate, user=Depends(admin)):
     import re
     if body.role not in ('admin', 'member') or not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',body.email):
         raise HTTPException(422, 'Invalid role or email')
+    if body.role=='admin' and body.tenant_id is not None:
+        raise HTTPException(422,'Global administrators cannot be organization members')
     if body.audience not in ('panel','app') or (body.audience == 'app' and body.role != 'member'):
         raise HTTPException(422, 'App users must be members')
     validate_scopes(body.scopes)
     encoded = hash_password(body.password)
     with db.connection() as conn:
+        require_active(conn,body.tenant_id)
         row = conn.execute('INSERT INTO setapi.users(email,password_hash,role,scopes,audience,tenant_id) VALUES(%s,%s,%s,%s,%s,%s) RETURNING id,email,role',
             (body.email.lower(), encoded, body.role, Jsonb(body.scopes), body.audience, body.tenant_id)).fetchone()
         audit(conn, user, 'user.create', str(row['id']))
@@ -192,6 +205,7 @@ def toggle_user(user_id: UUID, body: Active, user=Depends(admin)):
 
 
 class TokenCreate(BaseModel):
+    user_id: UUID | None = None
     name: str = Field(min_length=1, max_length=100)
     hours: int = Field(default=720, ge=1, le=8760)
     admin: bool = False
@@ -201,14 +215,22 @@ class TokenCreate(BaseModel):
 @router.get('/tokens')
 def tokens(user=Depends(admin)):
     with db.connection() as conn:
-        return {'data': conn.execute("SELECT id,name,prefix,scopes,admin,expires_at,revoked_at FROM setapi.tokens WHERE kind='api' ORDER BY created_at DESC LIMIT 200").fetchall()}
+        return {'data': conn.execute("SELECT t.id,t.name,t.prefix,t.scopes,t.admin,t.expires_at,t.revoked_at,t.user_id,u.tenant_id AS organization_id FROM setapi.tokens t JOIN setapi.users u ON u.id=t.user_id WHERE t.kind='api' ORDER BY t.created_at DESC LIMIT 200").fetchall()}
 
 
 @router.post('/tokens', status_code=201)
 def create_token(body: TokenCreate, response: Response, user=Depends(admin)):
     validate_scopes(body.scopes)
     with db.connection() as conn:
-        result = issue(conn, user['id'], body.name, scopes=body.scopes, admin=body.admin, hours=body.hours)
+        owner_id=body.user_id or user['id']
+        owner=conn.execute('SELECT id,role,active,tenant_id,scopes FROM setapi.users WHERE id=%s',(owner_id,)).fetchone()
+        if not owner or not owner['active']:raise HTTPException(422,'Choose an active token owner')
+        require_active(conn,owner['tenant_id'])
+        if body.admin and (owner['role']!='admin' or owner['tenant_id'] is not None):
+            raise HTTPException(422,'Organization tokens cannot have global administrative access')
+        if owner['role']!='admin' and any(not set(actions)<=set(owner['scopes'].get(table,[])) for table,actions in body.scopes.items()):
+            raise HTTPException(422,'Token permissions must be within the owner permissions')
+        result = issue(conn, owner_id, body.name, scopes=body.scopes, admin=body.admin, hours=body.hours)
         audit(conn, user, 'token.create', str(result['id']), {'name': body.name, 'admin': body.admin, 'scopes': body.scopes})
     response.headers['Cache-Control'] = 'no-store'
     return result

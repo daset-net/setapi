@@ -68,7 +68,7 @@ def test_storage(storage_id: UUID, user=Depends(admin)):
 @router.get('/files')
 def list_files(user=Depends(principal)):
     with db.connection() as conn:
-        return {'data': conn.execute('SELECT id,storage_id,owner_id,name,size,content_type,created_at FROM setapi.files WHERE (%s OR owner_id=%s) ORDER BY created_at DESC LIMIT 200', (is_admin(user), user['id'])).fetchall()}
+        return {'data': conn.execute('SELECT id,storage_id,owner_id,name,size,content_type,created_at FROM setapi.files WHERE (%s OR (owner_id=%s AND organization_id IS NOT DISTINCT FROM %s)) ORDER BY created_at DESC LIMIT 200', (is_admin(user), user['id'],user.get('tenant_id'))).fetchall()}
 
 
 @router.post('/files/{storage_id}', status_code=201)
@@ -91,10 +91,10 @@ def upload_file(storage_id: UUID, file: UploadFile, user=Depends(admin)):
         file_id = uuid4()
         key = adapter.upload(path, 'uploads/' + str(file_id), file.content_type or 'application/octet-stream')
         with db.connection() as conn:
-            row = conn.execute('''INSERT INTO setapi.files(id,storage_id,owner_id,name,object_key,content_type,size)
-                VALUES(%s,%s,%s,%s,%s,%s,%s) RETURNING id,name,size''',
+            row = conn.execute('''INSERT INTO setapi.files(id,storage_id,owner_id,name,object_key,content_type,size,organization_id)
+                VALUES(%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id,name,size''',
                 (file_id, storage_id, user['id'], Path(file.filename or 'file').name[:255], key,
-                 file.content_type or 'application/octet-stream', size)).fetchone()
+                 file.content_type or 'application/octet-stream', size,user.get('tenant_id'))).fetchone()
             audit(conn, user, 'file.upload', str(file_id))
         return row
     except Exception:
@@ -112,7 +112,7 @@ def upload_file(storage_id: UUID, file: UploadFile, user=Depends(admin)):
 @router.get('/files/{file_id}/download')
 def download_file(file_id: UUID, user=Depends(principal)):
     with db.connection() as conn:
-        row = conn.execute('SELECT * FROM setapi.files WHERE id=%s AND (%s OR owner_id=%s)', (file_id, is_admin(user), user['id'])).fetchone()
+        row = conn.execute('SELECT * FROM setapi.files WHERE id=%s AND (%s OR (owner_id=%s AND organization_id IS NOT DISTINCT FROM %s))', (file_id, is_admin(user), user['id'],user.get('tenant_id'))).fetchone()
         if not row:
             raise HTTPException(404, 'File not found')
         adapter = storage.get(conn, row['storage_id'])

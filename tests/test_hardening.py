@@ -13,6 +13,7 @@ def name():return 't_'+uuid4().hex[:10]
 
 
 def member(conn,table,tenant,owner_email=None,audience='app'):
+    if tenant:conn.execute('INSERT INTO setapi.organizations(id,name) VALUES(%s,%s) ON CONFLICT(id) DO NOTHING',(tenant,'Test '+str(tenant)))
     user=conn.execute("INSERT INTO setapi.users(email,password_hash,role,audience,tenant_id,scopes) VALUES(%s,%s,'member',%s,%s,%s) RETURNING *",(owner_email or uuid4().hex+'@test.example',hash_password('Very-long-test-pass-123'),audience,tenant,Jsonb({table:['read','create','update','delete']}))).fetchone()
     token=issue(conn,user['id'],'test','session',user['scopes'])['token']
     return user,{'Authorization':'Bearer '+token}
@@ -168,7 +169,8 @@ def test_websocket_does_not_deliver_other_student_ids(admin_client):
 
 def test_recovery_requires_mfa_and_owner_tenant_update_invalidates_sessions(admin_client,monkeypatch):
     c=admin_client;table,one,h1,two,h2=secured(c)
-    assert c.put('/api/users/'+str(one['id'])+'/access',json={'scopes':{table:['read']},'tenant_id':str(uuid4())}).status_code==200
+    new_org=c.post('/api/organizations',json={'name':name()}).json()['id']
+    assert c.put('/api/users/'+str(one['id'])+'/access',json={'scopes':{table:['read']},'tenant_id':new_org}).status_code==200
     assert c.get('/api/auth/me',headers=h1).status_code==401
     with db.connection() as conn:
         secret=__import__('base64').b32encode(secrets.token_bytes(20)).decode()
@@ -209,8 +211,8 @@ def test_foreign_keys_cannot_reference_another_owner(admin_client):
     c=admin_client;parent,one,h1,two,h2=secured(c)
     foreign=c.post('/api/data/'+parent,headers=h2,json={'title':'Private'}).json()['data']['id']
     child=name()
-    c.post('/api/tables',json={'name':child,'columns':[{'name':'owner','type':'uuid'},{'name':'parent_id','type':'uuid','references':parent}]})
-    c.put('/api/tables/'+child+'/policy',json={'owner_column':'owner','read_fields':['id','parent_id'],'write_fields':['parent_id']})
+    c.post('/api/tables',json={'name':child,'columns':[{'name':'owner','type':'uuid'},{'name':'tenant','type':'uuid'},{'name':'parent_id','type':'uuid','references':parent}]})
+    c.put('/api/tables/'+child+'/policy',json={'owner_column':'owner','tenant_column':'tenant','read_fields':['id','parent_id'],'write_fields':['parent_id']})
     from app.security import issue
     with db.connection() as conn:
         scopes={parent:['read'],child:['create','read']}

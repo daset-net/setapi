@@ -52,3 +52,17 @@ Use buckets privados e credenciais restritas ao bucket/pasta necessário. Config
 Ainda exigem configuração/validação real: HTTPS/proxy/firewall, privilégios PostgreSQL, limites de contêiner, SMTP, OAuth e permissões dos provedores; teste de restauração operacional; testes prolongados com consultas/dados do aplicativo; revisão independente. Rotação da chave de criptografia exige procedimento de manutenção e preservação das chaves dos backups antigos. Não faça migração de produção com base apenas no teste curto de carga.
 
 Referências usadas na revisão: [OWASP Authorization](https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html), [Forgot Password](https://cheatsheetseries.owasp.org/cheatsheets/Forgot_Password_Cheat_Sheet.html), [SSRF Prevention](https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html).
+
+## Organizações
+
+`/api/organizations` permite à administração global criar, renomear, ativar e desativar organizações. Membros só consultam a própria organização. A associação do usuário (`tenant_id`) exige organização existente e ativa; contas administrativas globais não podem ser vinculadas a uma organização.
+
+Cada usuário pertence a no máximo uma organização nesta versão. O isolamento é lógico, no mesmo PostgreSQL e nas mesmas tabelas, aplicado nas rotas da API e do WebSocket. Não são bancos ou contêineres independentes. O administrador global é uma exceção explícita: pode gerenciar todas as organizações. Não distribua sua conta/token como acesso de cliente.
+
+Contas de organização são bloqueadas em tabelas sem política de tenant, mesmo que tenham escopo de leitura. A criação de tabela com `organization_isolated=true` adiciona `organization_id`, sua chave estrangeira, índice e política. O painel marca essa opção por padrão. Campos adicionados posteriormente precisam ser liberados explicitamente na política.
+
+Desativar uma organização revoga todos os seus tokens e links de recuperação/verificação pendentes. Reativar não ressuscita tokens. Trocar um usuário de organização revoga os tokens; arquivos associados à organização anterior não ficam acessíveis ao usuário transferido. Registros não são transferidos automaticamente.
+
+Tokens de integração podem ser criados por um administrador global em nome de um usuário de organização; não podem receber escopos maiores que os do proprietário nem privilégio administrativo global. Herdam as verificações da organização em cada requisição.
+
+Backups, credenciais de storage, configuração OAuth, estrutura e políticas continuam exclusivos da administração global. Os backups da instância contêm todas as organizações e não devem ser distribuídos a membros. Nesta versão não há administradores delegados por organização, múltiplas associações por usuário, migração automática de registros entre organizações ou restauração parcial por organização.

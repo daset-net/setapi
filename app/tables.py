@@ -25,6 +25,7 @@ class Column(BaseModel):
 
 
 class Table(BaseModel):
+    organization_isolated: bool = False
     model_config = ConfigDict(extra='forbid')
     name: str
     columns: list[Column] = Field(default_factory=list, max_length=100)

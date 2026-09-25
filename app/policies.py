@@ -14,6 +14,8 @@ def policy(conn,table,user):
     if table not in cache:
         cache[table]=conn.execute('SELECT * FROM setapi.policies WHERE table_name=%s',(table,)).fetchone()
     row=cache[table]
+    if user.get('tenant_id') is not None and (not row or not row['tenant_column']):
+        raise HTTPException(403,'Organization users require an organization-scoped table policy')
     if not row and user['role']!='admin':
         raise HTTPException(403,'This table has no access policy for members')
     return row
@@ -68,8 +70,8 @@ def visible_event(user,event):
 class Policy(BaseModel):
     owner_column:str|None=None
     tenant_column:str|None=None
-    read_fields:list[str]=Field(default_factory=list,max_length=100)
-    write_fields:list[str]=Field(default_factory=list,max_length=100)
+    read_fields:list[str]=Field(default_factory=list,max_length=128)
+    write_fields:list[str]=Field(default_factory=list,max_length=128)
 
 
 @router.get('/{table}/policy')

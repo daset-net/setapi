@@ -1,6 +1,6 @@
 # Performance medida
 
-Execução local em 25/09/2026: quatro CPUs disponíveis, aproximadamente 8 GB de RAM total, máquina compartilhada com outros programas e swap já em uso. API, PostgreSQL, Redis, worker e gerador de carga na mesma máquina. **Não é benchmark do servidor do usuário nem comparação com Directus.**
+Execução local em 25/09/2026, antes da adição do cadastro de organizações (já incluía políticas de proprietário/tenant/campos): quatro CPUs disponíveis, aproximadamente 8 GB de RAM total, máquina compartilhada com outros programas e swap já em uso. API, PostgreSQL, Redis, worker e gerador de carga na mesma máquina. **Não é benchmark do servidor do usuário nem comparação com Directus.**
 
 Cenário: 10.000 registros iniciais, 200 contas individuais, isolamento por proprietário/tenant/campos, páginas de 20 registros sem contagem total; aproximadamente 80% leituras e 20% inserções. Uma API, pool máximo 20, mais um worker. Cada cenário executou por cerca de 30 segundos, além do encerramento das requisições em voo e das pausas dos clientes.
 

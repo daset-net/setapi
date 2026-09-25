@@ -81,3 +81,23 @@ BEGIN
  INSERT INTO setapi.outbox(table_name,event) VALUES(TG_TABLE_NAME,jsonb_build_object('table',TG_TABLE_NAME,'id',r->>'id','operation',CASE TG_OP WHEN 'INSERT' THEN 'created' WHEN 'UPDATE' THEN 'updated' ELSE 'deleted' END,'_row',route));
  RETURN NULL;
 END $$;
+CREATE TABLE IF NOT EXISTS setapi.organizations (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL UNIQUE,
+ active boolean NOT NULL DEFAULT true, created_at timestamptz NOT NULL DEFAULT now()
+);
+-- Preserve existing tenant identifiers when upgrading the preliminary tenant implementation.
+INSERT INTO setapi.organizations(id,name)
+SELECT DISTINCT tenant_id,'Organização importada '||tenant_id::text FROM setapi.users
+WHERE tenant_id IS NOT NULL ON CONFLICT(id) DO NOTHING;
+DO $$ BEGIN
+ IF NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conname='users_organization_fk' AND conrelid='setapi.users'::regclass) THEN
+  ALTER TABLE setapi.users ADD CONSTRAINT users_organization_fk FOREIGN KEY(tenant_id) REFERENCES setapi.organizations(id) ON DELETE RESTRICT;
+ END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS users_organization_idx ON setapi.users(tenant_id);
+DO $$ BEGIN
+ IF NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='setapi' AND table_name='files' AND column_name='organization_id') THEN
+  ALTER TABLE setapi.files ADD COLUMN organization_id uuid REFERENCES setapi.organizations(id) ON DELETE RESTRICT;
+  UPDATE setapi.files f SET organization_id=u.tenant_id FROM setapi.users u WHERE f.owner_id=u.id;
+ END IF;
+END $$;

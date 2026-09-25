@@ -124,6 +124,20 @@ Consulte [segurança e configuração](docs/SECURITY.md) e [testes de carga](doc
 - Backups manuais e periódicos, criptografia autenticada em blocos, SHA-256 e retenção por agendamento.
 - Restauração offline para banco vazio e histórico de operações sem segredos.
 
+## Organizações isoladas
+
+No painel, use **Organizações → Nova organização**. Em **Usuários**, escolha a organização de cada conta. Ao criar uma tabela, mantenha **Isolar dados por organização** marcado: o SETAPI cria o campo, o índice e a política necessários. Depois libere os campos e operações que os membros poderão usar.
+
+- Uma organização por usuário; o mesmo banco é compartilhado com isolamento lógico das linhas.
+- O cliente não escolhe nem altera `organization_id` nas gravações: a API usa a organização do usuário autenticado.
+- Sem política de organização na tabela, uma conta de organização é bloqueada.
+- Desativar uma organização encerra seus acessos e preserva registros. Reativar exige novo login.
+- O administrador global gerencia todas as organizações. Contas de organização não recebem essa permissão.
+- Em **Tokens**, escolha um usuário responsável da organização; o token herda sua organização e não amplia suas permissões.
+- Backups/storages/configuração são administrativos da instância. Não são compartilhados com as contas das organizações.
+
+A API aceita `POST /api/organizations` com `{name}`, `PATCH /api/organizations/{id}` com `{name?,active?}` e `POST /api/tables` com `organization_isolated:true`. Tabelas existentes precisam de campo/política de organização e associação correta dos registros antes da liberação; dados não são distribuídos automaticamente.
+
 ## Autenticação dos alunos
 
 - `POST /api/app-auth/register`: `{email,password}`; desativado até configurar SMTP e `SETAPI_ALLOW_REGISTRATION=true`.

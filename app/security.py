@@ -69,8 +69,8 @@ def authenticate(raw):
         raise HTTPException(401, 'Authentication required')
     with db.connection() as conn:
         row = conn.execute('''SELECT t.id AS token_id,t.scopes,t.admin,t.kind,u.id,u.email,u.role,
-          u.scopes AS user_scopes,u.tenant_id,u.audience,(u.mfa_secret IS NOT NULL) AS mfa_enabled FROM setapi.tokens t JOIN setapi.users u ON u.id=t.user_id
-          WHERE t.digest=%s AND t.revoked_at IS NULL AND t.expires_at>now() AND u.active''',
+          u.scopes AS user_scopes,u.tenant_id,u.audience,(u.mfa_secret IS NOT NULL) AS mfa_enabled FROM setapi.tokens t JOIN setapi.users u ON u.id=t.user_id LEFT JOIN setapi.organizations o ON o.id=u.tenant_id
+          WHERE t.digest=%s AND t.revoked_at IS NULL AND t.expires_at>now() AND u.active AND (u.tenant_id IS NULL OR o.active)''',
           (hashlib.sha256(raw.encode()).hexdigest(),)).fetchone()
     if not row:
         raise HTTPException(401, 'Invalid or expired token')
@@ -92,7 +92,7 @@ def principal(request: Request):
 
 
 def is_admin(user):
-    return user['role'] == 'admin' and user['admin'] and user.get('audience', 'panel') == 'panel'
+    return user['role'] == 'admin' and user['admin'] and user.get('audience', 'panel') == 'panel' and user.get('tenant_id') is None
 
 
 def admin(user=Depends(principal)):
