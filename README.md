@@ -4,7 +4,7 @@
 
 Backend self-hosted com PostgreSQL, Redis, API automática, WebSocket, painel administrativo, tokens por tabela e storage integrado. O painel usa a mesma API que suas aplicações. Código próprio sob licença MIT, sem limite de faturamento.
 
-> **v0.1.0 — primeira versão funcional.** Não é um substituto completo do Directus nem foi validado para cargas de produção. Consulte os limites abaixo antes de migrar dados reais.
+> **v0.2.0 — autenticação, isolamento e controles de carga.** Não é um substituto completo do Directus nem foi validado para cargas de produção. Consulte os limites abaixo antes de migrar dados reais.
 
 ## Instalação com três serviços
 
@@ -91,14 +91,27 @@ A estrutura e as configurações persistem no PostgreSQL. Reserve espaço tempor
 | `SETAPI_COOKIE_SECURE` | `true` para HTTPS; `false` somente no ambiente HTTP local |
 | `SETAPI_CORS_ORIGINS` | Origens de aplicações separadas por vírgula; sem liberação por padrão |
 | `SETAPI_MAX_UPLOAD_MB` | Limite de arquivo, padrão 50 MiB |
+| `SETAPI_DB_POOL_MAX` | Máximo de conexões por processo, padrão 20 |
+| `SETAPI_WS_MAX` / `SETAPI_HTTP_CONCURRENCY` | Limites por processo, padrão 1000 |
+| `SETAPI_ALLOW_REGISTRATION` | Cadastro público de alunos; desativado por padrão |
+| `SETAPI_SMTP_HOST/PORT/FROM/USER/PASSWORD` | Recuperação/verificação de e-mail; TLS obrigatório |
+| `SETAPI_STORAGE_HOSTS` | Allowlist de hosts HTTPS para S3 compatível, além de AWS/R2 |
 
-Guarde a chave de criptografia separadamente do servidor e dos backups. Perder essa chave impede recuperar credenciais e abrir backups. A v0.1 não tem rotação automática da chave.
+Guarde a chave de criptografia separadamente do servidor e dos backups. Perder essa chave impede recuperar credenciais e abrir backups. A chave ainda não tem rotação automática.
 
 PostgreSQL e Redis são configurados por variáveis de ambiente para permitir bootstrap e recuperação. O painel mostra seu estado; conexões S3/R2/Drive são configuradas pelo painel. Alterar a conexão principal requer reiniciar API e worker.
 
+## Atualizar instalações anteriores
+
+Antes de atualizar, faça backup e preserve a chave de criptografia. A inicialização adiciona tabelas/colunas internas e instala triggers nas tabelas compatíveis, sem excluir registros. **Membros agora precisam de política explícita na tabela**, além dos escopos do usuário/token; configure proprietário, tenant e campos pelo painel antes de liberar aplicações. Tokens administrativos continuam com acesso amplo.
+
+Os novos limites são: 64 KiB por gravação de registro, 2 MiB por página de leitura, offset máximo 10.000, 1.200 requisições/minuto por usuário, 10.000/minuto por IP e dez WebSockets por usuário. Arquivos grandes devem ir ao storage. Para listas frequentes, use `include_total=false` e limites pequenos. Links de recuperação usam fragmento do navegador; não coloque tokens de serviço nas URLs.
+
+Consulte [segurança e configuração](docs/SECURITY.md) e [testes de carga](docs/PERFORMANCE.md). Os testes não certificam ausência de vulnerabilidades nem capacidade do servidor de produção.
+
 ## O que está implementado
 
-- Login do painel com cookie HttpOnly/SameSite, verificação de origem e proteção CSRF.
+- Login do painel com cookie HttpOnly/SameSite=Lax, verificação de origem e proteção CSRF. Lax permite retornar do Google; o callback exige state vinculado à sessão e de uso único.
 - Senhas Argon2id; tokens aleatórios armazenados somente como SHA-256, com validade, revogação e escopos por tabela.
 - Usuários administradores e membros; ativação/desativação pelo painel.
 - Tabelas no schema `data`, CRUD imediato, criação/renomeação/exclusão de campos e exclusão de tabelas com confirmação explícita.
@@ -110,6 +123,20 @@ PostgreSQL e Redis são configurados por variáveis de ambiente para permitir bo
 - Upload administrativo e download autorizado, sem tornar o bucket público.
 - Backups manuais e periódicos, criptografia autenticada em blocos, SHA-256 e retenção por agendamento.
 - Restauração offline para banco vazio e histórico de operações sem segredos.
+
+## Autenticação dos alunos
+
+- `POST /api/app-auth/register`: `{email,password}`; desativado até configurar SMTP e `SETAPI_ALLOW_REGISTRATION=true`.
+- `POST /api/app-auth/verify`: confirma o token enviado por e-mail; não concede acesso a tabelas.
+- `POST /api/app-auth/login`: `{email,password,otp?}`; retorna token individual com validade de 12 horas. Envie como `Authorization: Bearer ...`.
+- `GET /api/auth/me`, `POST /api/auth/logout`: identidade e encerramento da sessão.
+- `POST /api/auth/password`: senha atual, nova senha e código MFA quando habilitado.
+- `POST /api/auth/forgot-password` e `/api/auth/reset-password`: recuperação; MFA continua obrigatório se ativado.
+- `GET /api/auth/sessions`, `DELETE /api/auth/sessions/{id}`: revogação das próprias sessões.
+
+No painel, crie o usuário como **Aplicativo (aluno)** e atribua permissões e organização. Na tabela, crie campos UUID para proprietário/tenant e configure **Permissões da tabela**. A API preenche esses campos e impede sua substituição pelo aluno. As regras de proprietário e tenant se somam quando ambas estão configuradas. Um aluno não recebe credenciais do PostgreSQL/Redis nem o token administrativo.
+
+A documentação `/docs` e `/openapi.json` agora exige sessão administrativa. A aplicação do aluno deve usar seu próprio frontend; usuários de aplicativo não fazem login no console administrativo.
 
 ## API em uso
 
@@ -168,9 +195,9 @@ O servidor confirma com `{"type":"ready","tables":["clientes"],"resync":true}` e
 {"type":"change","table":"clientes","operation":"updated","id":"UUID","event_id":42}
 ```
 
-Notificações contêm identificadores, não o conteúdo dos registros. Faça uma nova consulta à API para obter os dados. Reconsulte também ao reconectar. A entrega é **pelo menos uma vez até o Redis**, com possíveis duplicatas: deduplique por `event_id`. Redis Pub/Sub não guarda mensagens para clientes desconectados e não há replay de histórico na v0.1. O servidor verifica novamente a autorização antes de enviar eventos e verifica a sessão nos heartbeats.
+Notificações contêm identificadores, não o conteúdo dos registros. Faça uma nova consulta à API para obter os dados. Reconsulte também ao reconectar. A entrega é **pelo menos uma vez até o Redis**, com possíveis duplicatas: deduplique por `event_id`. Redis Pub/Sub não guarda mensagens para clientes desconectados e não há replay de histórico nesta versão. O servidor verifica novamente a autorização antes de enviar eventos e verifica a sessão nos heartbeats.
 
-Alterações externas feitas diretamente no PostgreSQL não geram eventos; todo acesso de escrita deve passar pela API. Alterações de estrutura ficam disponíveis sem restart. Ao criar tabelas, clientes externos precisam reabrir a assinatura com a nova lista.
+Tabelas gerenciadas possuem trigger transacional: INSERT/UPDATE/DELETE feitos diretamente no PostgreSQL também geram eventos. Escritas SQL externas exigem uma conta de banco confiável; as políticas da API não se aplicam a quem recebe credenciais SQL. Alterações de estrutura ficam disponíveis sem restart. Ao criar tabelas, clientes externos precisam reabrir a assinatura com a nova lista.
 
 ## Storage
 
@@ -252,15 +279,15 @@ Schemas: `setapi` guarda metadados privados e `data` guarda tabelas gerenciadas.
 ## Limites desta primeira versão
 
 - Uma conexão PostgreSQL e uma Redis por ambiente; não é um gerenciador multi-banco.
-- API automática somente para tabelas criadas no schema `data` com o contrato de colunas do SETAPI; não publica automaticamente tabelas arbitrárias de bancos existentes.
-- Permissões por tabela/operação; **não há isolamento por linha, tenant ou campo**. Não compartilhe uma mesma tabela de dados sensíveis entre clientes que devem ver linhas diferentes.
-- Não há migração automática do Directus, GraphQL, editor visual de relacionamentos, alteração arbitrária de tipos de coluna ou editor genérico de índices. Unicidade cria índices no PostgreSQL.
-- Formulários de registros e definições de campos usam JSON no painel inicial.
-- Login é para usuários do painel; autenticação pública de usuários finais, MFA, recuperação por e-mail e rotação de senha ainda não foram implementados.
-- Login tem limite de tentativas por IP e conta. Quotas/rate limits gerais devem ser configurados no proxy nesta versão.
-- Arquivos: upload administrativo, listagem/download por proprietário ou administrador; não há biblioteca pública nem exclusão de arquivos pelo painel.
+- A API opera no schema `data`. Tabelas preexistentes podem ser preparadas pelo painel: adiciona UUID e datas quando faltarem. IDs preexistentes de outro tipo e relacionamentos precisam de migração explícita. Outros schemas não são expostos automaticamente.
+- Políticas por tabela, proprietário, tenant e campos. Configure-as explicitamente: membros sem política não recebem acesso. Administradores têm acesso total; nunca compartilhe tokens administrativos com alunos.
+- Não há migração automática do Directus ou GraphQL. O painel oferece campos relacionais UUID, conversão de tipos PostgreSQL com confirmação e criação de índices; tabelas grandes exigem manutenção planejada.
+- Registros, campos, permissões e provedores têm formulários. Campos cujo próprio tipo é JSON continuam usando um editor JSON.
+- Usuários de aplicativo possuem login separado; cadastro público exige ativação explícita e SMTP com TLS. Novos cadastros começam sem permissões e sem tenant. Administradores atribuem acesso. MFA TOTP e códigos de recuperação estão disponíveis; troca/reset de senha revogam todos os tokens e sessões.
+- Existem limites de login, recuperação, requisições e WebSockets. Proteção volumétrica/DDoS, limite de conexões e egress de rede também precisam ser configurados na infraestrutura.
+- Arquivos: upload e exclusão administrativos, listagem/download por proprietário ou administrador; sem biblioteca pública por padrão.
 - Backups longos precisam de espaço temporário e banda; não há PITR/WAL, cópia dos objetos externos, restauração online ou retomada persistente de um upload Drive interrompido.
-- Alterações diretas no banco ficam fora da outbox. Não há garantia de ordenação global ao usar múltiplos workers; comece com um worker.
+- Triggers capturam alterações de registros. Não há garantia de ordenação global ao usar múltiplos workers; comece com um worker. Clientes devem reconsultar ao reconectar ou receber resync.
 - Requer homologação de carga, revisão de segurança e testes com seus provedores reais antes de produção.
 
 ## Testes

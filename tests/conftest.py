@@ -34,6 +34,9 @@ def client():
 
 @pytest.fixture
 def admin_client(client):
+    from app import db
+    import hashlib
+    db.cache.delete('setapi:login:email:'+hashlib.sha256(os.environ['SETAPI_ADMIN_EMAIL'].encode()).hexdigest())
     response = client.post('/api/auth/login', json={'email':os.environ['SETAPI_ADMIN_EMAIL'],'password':os.environ['SETAPI_ADMIN_PASSWORD']})
     assert response.status_code == 200, response.text
     client.headers.update({'Origin':'http://testserver','X-SETAPI-CSRF':'1'})

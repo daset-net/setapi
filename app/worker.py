@@ -2,7 +2,7 @@ import json
 import logging
 import signal
 import threading
-from . import db, storage
+from . import db, storage, mail
 from .backup import create_backup
 
 log = logging.getLogger('setapi.worker')
@@ -12,8 +12,17 @@ stopping = threading.Event()
 def publish_events():
     with db.connection() as conn:
         rows = conn.execute('SELECT * FROM setapi.outbox ORDER BY id LIMIT 100 FOR UPDATE SKIP LOCKED').fetchall()
+        rules={p['table_name']:p for p in conn.execute('SELECT * FROM setapi.policies WHERE table_name=ANY(%s)',(list({r['table_name'] for r in rows}),)).fetchall()} if rows else {}
         for row in rows:
-            db.cache.publish('setapi:events', json.dumps(dict(row['event'], event_id=row['id'])))
+            payload=json.dumps(dict(row['event'],event_id=row['id']))
+            base='setapi:table:'+row['table_name']
+            db.cache.publish('setapi:events',payload)
+            db.cache.publish(base,payload)
+            rule=rules.get(row['table_name']);route=row['event'].get('_row',{})
+            if rule and rule['owner_column'] and route.get(rule['owner_column']):
+                db.cache.publish(base+':owner:'+str(route[rule['owner_column']]),payload)
+            elif rule and rule['tenant_column'] and route.get(rule['tenant_column']):
+                db.cache.publish(base+':tenant:'+str(route[rule['tenant_column']]),payload)
             conn.execute('DELETE FROM setapi.outbox WHERE id=%s', (row['id'],))
     return len(rows)
 
@@ -72,6 +81,16 @@ def backup_loop():
         stopping.wait(5)
 
 
+def mail_loop():
+    while not stopping.is_set():
+        try:
+            mail.send_one()
+            mail.cleanup()
+        except Exception as exc:
+            log.error('Mail cycle failed (%s)',type(exc).__name__)
+        stopping.wait(1)
+
+
 def main():
     logging.basicConfig(level=logging.INFO)
     db.start()
@@ -79,6 +98,8 @@ def main():
         signal.signal(sig, lambda *_: stopping.set())
     thread = threading.Thread(target=backup_loop, daemon=True)
     thread.start()
+    mail_thread=threading.Thread(target=mail_loop,daemon=True)
+    mail_thread.start()
     try:
         while not stopping.is_set():
             try:
@@ -89,6 +110,7 @@ def main():
             stopping.wait(.25)
     finally:
         thread.join(timeout=10)
+        mail_thread.join(timeout=2)
         db.stop()
 
 

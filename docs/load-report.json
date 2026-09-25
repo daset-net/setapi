@@ -1,0 +1,57 @@
+{
+  "date_utc": "2026-09-25T21:42:20Z",
+  "cpu_count": 4,
+  "cpu_affinity": 4,
+  "database_rows_initial": 10000,
+  "api_processes": 1,
+  "db_pool_max": 20,
+  "notes": "Local shared machine; not a production capacity guarantee. Pre-issued individual student sessions; excludes login/hash cost, uploads and backups. 80% list reads, 20% inserts, owner+tenant+field policy. Includes active WebSockets.",
+  "scenarios": [
+    {
+      "clients": 100,
+      "websockets": 100,
+      "seconds": 32.02,
+      "think_time_seconds": 2,
+      "requests": 1487,
+      "requests_per_second": 46.44,
+      "http_errors": {},
+      "p50_ms": 17.69,
+      "p95_ms": 541.31,
+      "p99_ms": 973.97,
+      "websocket_events": 287,
+      "websocket_errors": 0
+    },
+    {
+      "clients": 200,
+      "websockets": 200,
+      "seconds": 31.98,
+      "think_time_seconds": 2,
+      "requests": 2897,
+      "requests_per_second": 90.59,
+      "http_errors": {},
+      "p50_ms": 24.24,
+      "p95_ms": 785.05,
+      "p99_ms": 1521.28,
+      "websocket_events": 497,
+      "websocket_errors": 0
+    },
+    {
+      "clients": 100,
+      "websockets": 100,
+      "seconds": 31.46,
+      "think_time_seconds": 0,
+      "requests": 3031,
+      "requests_per_second": 96.36,
+      "http_errors": {},
+      "p50_ms": 571.52,
+      "p95_ms": 3496.05,
+      "p99_ms": 5050.48,
+      "websocket_events": 564,
+      "websocket_errors": 0
+    }
+  ],
+  "api_alive": true,
+  "worker_alive": true,
+  "api_peak_rss_kb": 127092,
+  "worker_peak_rss_kb": 76324
+}

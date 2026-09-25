@@ -82,10 +82,10 @@ def test_websocket_scope_and_delivery(admin_client):
     with c.websocket_connect('/ws',headers={'origin':'http://testserver'}) as ws:
         ws.send_json({'token':token['token'],'tables':[name]})
         assert ws.receive_json()['type']=='ready'
-        db.cache.publish('setapi:events',json.dumps({'table':name,'id':'example','operation':'updated','event_id':999}))
+        db.cache.publish('setapi:table:'+name,json.dumps({'table':name,'id':'example','operation':'updated','event_id':999}))
         assert ws.receive_json()['event_id']==999
         c.delete('/api/tokens/'+token['id'])
-        db.cache.publish('setapi:events',json.dumps({'table':name,'id':'example','operation':'updated','event_id':1000}))
+        db.cache.publish('setapi:table:'+name,json.dumps({'table':name,'id':'example','operation':'updated','event_id':1000}))
         from starlette.websockets import WebSocketDisconnect
         import pytest
         with pytest.raises(WebSocketDisconnect):ws.receive_json()

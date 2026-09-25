@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+import os
 from pathlib import Path
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
@@ -13,7 +14,7 @@ cache = None
 def start():
     global pool, cache
     conf = settings()
-    pool = ConnectionPool(conf.database_url, min_size=1, max_size=12, timeout=10,
+    pool = ConnectionPool(conf.database_url, min_size=1, max_size=int(os.getenv("SETAPI_DB_POOL_MAX", "20")), timeout=5, max_waiting=100,
                           kwargs={'row_factory': dict_row, 'options': '-c statement_timeout=15000 -c lock_timeout=5000'}, open=True)
     pool.wait(timeout=30)
     cache = Redis.from_url(conf.redis_url, decode_responses=True, socket_connect_timeout=3, socket_timeout=5)
@@ -21,6 +22,14 @@ def start():
     with pool.connection() as conn:
         conn.execute('SELECT pg_advisory_xact_lock(73288101)')
         conn.execute(Path(__file__).with_name('schema.sql').read_text())
+        from . import tables
+        rows=conn.execute("SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='data' AND c.relkind='r'").fetchall()
+        for row in rows:
+            cols={c['name']:c['type'] for c in tables.columns(conn,row['relname'])}
+            if cols.get('id')=='uuid' and cols.get('created_at')=='timestamp with time zone' and cols.get('updated_at')=='timestamp with time zone':
+                from fastapi import HTTPException
+                try:tables.manage(conn,row['relname'])
+                except HTTPException:pass
         if not conn.execute('SELECT 1 FROM setapi.users LIMIT 1').fetchone():
             if len(conf.bootstrap_password) < 12:
                 raise RuntimeError('SETAPI_ADMIN_PASSWORD must contain at least 12 characters for bootstrap.')

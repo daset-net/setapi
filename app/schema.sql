@@ -47,3 +47,37 @@ CREATE TABLE IF NOT EXISTS setapi.backups (
 CREATE TABLE IF NOT EXISTS setapi.integrations (
  name text PRIMARY KEY, value_encrypted text NOT NULL
 );
+
+ALTER TABLE setapi.users ADD COLUMN IF NOT EXISTS audience text NOT NULL DEFAULT 'panel';
+ALTER TABLE setapi.users ADD COLUMN IF NOT EXISTS tenant_id uuid;
+ALTER TABLE setapi.users ADD COLUMN IF NOT EXISTS mfa_secret text;
+ALTER TABLE setapi.users ADD COLUMN IF NOT EXISTS mfa_step bigint NOT NULL DEFAULT -1;
+ALTER TABLE setapi.users ADD COLUMN IF NOT EXISTS recovery_hashes jsonb NOT NULL DEFAULT '[]';
+CREATE TABLE IF NOT EXISTS setapi.policies (
+ table_name text PRIMARY KEY, owner_column text, tenant_column text,
+ read_fields jsonb NOT NULL DEFAULT '[]', write_fields jsonb NOT NULL DEFAULT '[]'
+);
+CREATE TABLE IF NOT EXISTS setapi.action_tokens (
+ digest text PRIMARY KEY, user_id uuid NOT NULL REFERENCES setapi.users(id),
+ purpose text NOT NULL, expires_at timestamptz NOT NULL
+);
+CREATE TABLE IF NOT EXISTS setapi.mail_queue (
+ id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, payload_encrypted text NOT NULL,
+ attempts integer NOT NULL DEFAULT 0, next_attempt timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS tokens_user_idx ON setapi.tokens(user_id);
+CREATE INDEX IF NOT EXISTS files_owner_idx ON setapi.files(owner_id);
+CREATE INDEX IF NOT EXISTS backups_status_idx ON setapi.backups(status,created_at);
+CREATE INDEX IF NOT EXISTS schedules_due_idx ON setapi.schedules(next_run) WHERE enabled;
+CREATE OR REPLACE FUNCTION setapi.capture_change() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE r jsonb; route jsonb := '{}'::jsonb; p record;
+BEGIN
+ IF TG_OP='DELETE' THEN r=to_jsonb(OLD); ELSE r=to_jsonb(NEW); END IF;
+ SELECT * INTO p FROM setapi.policies WHERE table_name=TG_TABLE_NAME;
+ IF FOUND THEN
+  IF p.owner_column IS NOT NULL THEN route=route || jsonb_build_object(p.owner_column,r->p.owner_column); END IF;
+  IF p.tenant_column IS NOT NULL THEN route=route || jsonb_build_object(p.tenant_column,r->p.tenant_column); END IF;
+ END IF;
+ INSERT INTO setapi.outbox(table_name,event) VALUES(TG_TABLE_NAME,jsonb_build_object('table',TG_TABLE_NAME,'id',r->>'id','operation',CASE TG_OP WHEN 'INSERT' THEN 'created' WHEN 'UPDATE' THEN 'updated' ELSE 'deleted' END,'_row',route));
+ RETURN NULL;
+END $$;

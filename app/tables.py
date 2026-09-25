@@ -55,13 +55,25 @@ def exists(conn, table):
 
 
 def columns(conn, table):
-    exists(conn, table)
-    return conn.execute('''SELECT column_name AS name,data_type AS type,is_nullable='YES' AS nullable,
-      column_default AS default_value FROM information_schema.columns
-      WHERE table_schema='data' AND table_name=%s ORDER BY ordinal_position''', (table,)).fetchall()
+    identifier(table)
+    rows = conn.execute("""SELECT a.attname AS name,
+      CASE t.typname WHEN 'bool' THEN 'boolean' WHEN 'int8' THEN 'bigint' WHEN 'timestamptz' THEN 'timestamp with time zone'
+      ELSE t.typname END AS type, NOT a.attnotnull AS nullable,
+      pg_get_expr(d.adbin,d.adrelid) AS default_value
+      FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid
+      JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_type t ON t.oid=a.atttypid
+      LEFT JOIN pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum
+      WHERE n.nspname='data' AND c.relname=%s AND c.relkind='r' AND a.attnum>0 AND NOT a.attisdropped
+      ORDER BY a.attnum""", (table,)).fetchall()
+    if not rows:
+        raise HTTPException(404, 'Table not found')
+    return rows
 
 
 def values(conn, table, body):
+    import json
+    if len(json.dumps(body,default=str).encode())>65536:
+        raise HTTPException(413,'Record fields must fit within 64 KiB; use file storage for larger content')
     if not body or len(body) > 100:
         raise HTTPException(422, 'Provide between 1 and 100 fields')
     cols = {c['name']: c['type'] for c in columns(conn, table)}
@@ -77,3 +89,22 @@ def event(conn, table, operation, record_id):
     # IDs only: payloads never disclose record contents over Pub/Sub.
     conn.execute('INSERT INTO setapi.outbox(table_name,event) VALUES(%s,%s)',
                  (table, Jsonb({'table': table, 'operation': operation, 'id': str(record_id)})))
+
+
+def manage(conn,table):
+    cols={c['name']:c['type'] for c in columns(conn,table)}
+    if cols.get('id')!='uuid' or cols.get('created_at')!='timestamp with time zone' or cols.get('updated_at')!='timestamp with time zone':
+        raise HTTPException(422,'Managed tables require UUID id and timestamp created_at/updated_at fields')
+    valid=conn.execute("""SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid=i.indrelid JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_attribute a ON a.attrelid=c.oid AND a.attname='id'
+       WHERE n.nspname='data' AND c.relname=%s AND i.indisunique AND i.indisvalid AND i.indnkeyatts=1 AND i.indkey[0]=a.attnum AND i.indpred IS NULL AND a.attnotnull""",(table,)).fetchone()
+    if not valid:raise HTTPException(422,'id must be non-null and unique before adoption')
+    index='st_'+__import__('hashlib').sha256(table.encode()).hexdigest()[:20]
+    conn.execute(sql.SQL('CREATE INDEX IF NOT EXISTS {} ON data.{} (created_at,id)').format(sql.Identifier(index),sql.Identifier(table)))
+    conn.execute(sql.SQL('CREATE OR REPLACE TRIGGER setapi_changes AFTER INSERT OR UPDATE OR DELETE ON data.{} FOR EACH ROW EXECUTE FUNCTION setapi.capture_change()').format(sql.Identifier(table)))
+
+
+
+def require_managed(conn,table):
+    identifier(table)
+    if not conn.execute("SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='data' AND c.relname=%s AND t.tgname='setapi_changes' AND t.tgenabled<>'D'",(table,)).fetchone():
+        raise HTTPException(409,'Adopt this table before using its data API')

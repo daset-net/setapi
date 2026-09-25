@@ -1,4 +1,8 @@
 import json
+import os
+import ipaddress
+import socket
+import re
 from pathlib import Path
 from urllib.parse import urlparse
 import boto3
@@ -18,17 +22,34 @@ def decrypt(value):
 
 
 def validate(provider, config):
+    if not isinstance(config,dict) or len(config)>12 or any(not isinstance(v,str) or len(v)>8192 for v in config.values()):
+        raise HTTPException(422,'Storage configuration must contain bounded text fields')
+    if provider=='drive' and not re.fullmatch(r'[A-Za-z0-9_-]{1,200}',config.get('folder_id','')):
+        raise HTTPException(422,'Invalid Google Drive folder ID')
     required = ['bucket', 'access_key_id', 'secret_access_key'] if provider in ('s3', 'r2') else ['client_id', 'client_secret', 'refresh_token', 'folder_id']
     if provider not in ('s3', 'r2', 'drive') or any(not config.get(k) for k in required):
         raise HTTPException(422, 'Missing provider configuration fields')
     if provider == 'r2' and not config.get('endpoint_url'):
         raise HTTPException(422, 'R2 requires its HTTPS S3 endpoint')
-    if config.get('endpoint_url') and urlparse(config['endpoint_url']).scheme != 'https':
-        raise HTTPException(422, 'Storage endpoints must use HTTPS')
+    if config.get('endpoint_url'):
+        try:
+            endpoint=urlparse(config['endpoint_url']);port=endpoint.port
+        except ValueError:
+            raise HTTPException(422,'Invalid endpoint URL')
+        host=endpoint.hostname or ''
+        trusted=host.endswith('.amazonaws.com') or host.endswith('.r2.cloudflarestorage.com') or host in os.getenv('SETAPI_STORAGE_HOSTS','').split(',')
+        if endpoint.scheme!='https' or endpoint.username or endpoint.password or port not in (None,443) or endpoint.path not in ('','/') or endpoint.query or endpoint.fragment or not trusted:
+            raise HTTPException(422,'Use an HTTPS storage host authorized in SETAPI_STORAGE_HOSTS')
+        try:
+            addresses=socket.getaddrinfo(host,443,type=socket.SOCK_STREAM)
+            if not addresses or any(not ipaddress.ip_address(a[4][0]).is_global for a in addresses):raise ValueError()
+        except (ValueError,OSError):
+            raise HTTPException(422,'Storage endpoint must resolve to public addresses')
 
 
 class Storage:
     def __init__(self, provider, config):
+        validate(provider,config)
         self.provider, self.config = provider, config
         if provider in ('s3', 'r2'):
             self.s3 = boto3.client('s3', endpoint_url=config.get('endpoint_url') or None,

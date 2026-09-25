@@ -42,6 +42,10 @@ def main():
     with psycopg.connect(target) as conn:
         conn.execute('UPDATE setapi.tokens SET revoked_at=now()')
         conn.execute('DELETE FROM setapi.outbox')
+        for table in ('action_tokens','mail_queue'):
+            if conn.execute("SELECT to_regclass(%s)",('setapi.'+table,)).fetchone()[0]:
+                from psycopg import sql
+                conn.execute(sql.SQL('DELETE FROM setapi.{}').format(sql.Identifier(table)))
         conn.execute("UPDATE setapi.backups SET status='failed',error='Interrupted by restore' WHERE status IN ('queued','running')")
         conn.execute('UPDATE setapi.schedules SET enabled=false')
     print('Restore completed. Tokens revoked and schedules paused. Use the original encryption key when starting SETAPI.')

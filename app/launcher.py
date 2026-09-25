@@ -9,7 +9,7 @@ import time
 
 def commands():
     result = [[sys.executable, '-m', 'uvicorn', 'app.main:app', '--host', '0.0.0.0',
-               '--port', '8055', '--ws-max-size', '65536', '--no-access-log']]
+               '--port', '8055', '--ws-max-size', '65536', '--no-access-log', '--limit-concurrency', os.getenv('SETAPI_HTTP_CONCURRENCY','1000')]]
     if os.environ.get('SETAPI_RUN_WORKER', 'true').lower() == 'true':
         result.append([sys.executable, '-m', 'app.worker'])
     return result

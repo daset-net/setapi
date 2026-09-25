@@ -97,6 +97,13 @@ def upload_file(storage_id: UUID, file: UploadFile, user=Depends(admin)):
                  file.content_type or 'application/octet-stream', size)).fetchone()
             audit(conn, user, 'file.upload', str(file_id))
         return row
+    except Exception:
+        if key:
+            try:adapter.delete(key)
+            except Exception:
+                import logging
+                logging.error('Upload compensation failed; review orphaned objects in storage')
+        raise
     finally:
         os.unlink(path)
         file.file.close()
@@ -168,3 +175,22 @@ def delete_schedule(schedule_id: UUID, user=Depends(admin)):
     with db.connection() as conn:
         conn.execute('DELETE FROM setapi.schedules WHERE id=%s', (schedule_id,))
         audit(conn, user, 'backup.schedule.delete', str(schedule_id))
+
+
+@router.delete('/files/{file_id}',status_code=204)
+def delete_file(file_id:UUID,user=Depends(admin)):
+    with db.connection() as conn:
+        row=conn.execute('SELECT * FROM setapi.files WHERE id=%s FOR UPDATE',(file_id,)).fetchone()
+        if not row:raise HTTPException(404,'File not found')
+        try:storage.get(conn,row['storage_id']).delete(row['object_key'])
+        except Exception:raise HTTPException(502,'Provider deletion failed; retry later')
+        conn.execute('DELETE FROM setapi.files WHERE id=%s',(file_id,))
+        audit(conn,user,'file.delete',str(file_id))
+
+
+@router.delete('/storages/{storage_id}',status_code=204)
+def delete_storage(storage_id:UUID,user=Depends(admin)):
+    with db.connection() as conn:
+        # RESTRICT foreign keys preserve connections referenced by files/backups/schedules.
+        conn.execute('DELETE FROM setapi.storages WHERE id=%s',(storage_id,))
+        audit(conn,user,'storage.delete',str(storage_id))
