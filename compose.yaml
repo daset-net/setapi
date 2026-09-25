@@ -1,61 +1,63 @@
 name: setapi
-x-app: &app
-  image: setapi:local
-  build: .
-  env_file: .env
-  restart: unless-stopped
-  init: true
-  security_opt:
-    - no-new-privileges:true
-  cap_drop:
-    - ALL
-  depends_on:
-    postgres:
-      condition: service_healthy
-    redis:
-      condition: service_healthy
-
 services:
-  api:
-    <<: *app
+  setapi_app:
+    container_name: setapi_app
+    image: setapi:local
+    build: .
+    env_file: .env
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      SETAPI_RUN_WORKER: "true"
     ports:
-      - "127.0.0.1:8055:8055"
-  worker:
-    <<: *app
-    command: ["python", "-m", "app.worker"]
-    healthcheck:
-      test: ["CMD", "python", "-c", "import os,redis; assert redis.Redis.from_url(os.environ['REDIS_URL']).get('setapi:worker:heartbeat')"]
-      interval: 30s
-      timeout: 5s
-      start_period: 45s
-      retries: 3
-  postgres:
+      - "${SETAPI_BIND_HOST:-127.0.0.1}:${SETAPI_PORT:-8055}:8055"
+    depends_on:
+      setapi_db:
+        condition: service_healthy
+      setapi_redis:
+        condition: service_healthy
+
+  setapi_db:
+    container_name: setapi_db
     image: postgres:17-bookworm
     restart: unless-stopped
     environment:
       POSTGRES_DB: setapi
       POSTGRES_USER: setapi
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run scripts/init_env.py}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run bash install.sh --generate-only}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    networks:
+      default:
+        aliases: [postgres]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U setapi -d setapi"]
       interval: 5s
       timeout: 5s
-      retries: 10
-  redis:
+      retries: 20
+
+  setapi_redis:
+    container_name: setapi_redis
     image: redis:8-alpine
     restart: unless-stopped
     environment:
-      REDIS_PASSWORD: ${REDIS_PASSWORD:?Run scripts/init_env.py}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Run bash install.sh --generate-only}
     command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
     volumes:
       - redis_data:/data
+    networks:
+      default:
+        aliases: [redis]
     healthcheck:
       test: ["CMD-SHELL", "REDISCLI_AUTH=$$REDIS_PASSWORD redis-cli ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
-      retries: 10
+      retries: 20
 
 volumes:
   postgres_data:

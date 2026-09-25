@@ -42,3 +42,13 @@ jobs:
             -e DATABASE_URL -e REDIS_URL \
             -v "$PWD/tests:/tests:ro" \
             setapi:ci sh -c 'pip install --target /tmp/testdeps pytest==9.1.1 && PYTHONPATH=/tmp/testdeps:/srv/setapi python -m pytest -q /tests -p no:cacheprovider'
+      - name: Install the three-service stack
+        run: bash install.sh
+      - name: Verify API, login, worker and container names
+        run: |
+          docker exec setapi_app python -m app.healthcheck
+          python3 scripts/smoke_install.py
+          test "$(docker compose ps --services --status running | sort | tr '\n' ' ')" = "setapi_app setapi_db setapi_redis "
+      - name: Stop test stack
+        if: always()
+        run: docker compose down

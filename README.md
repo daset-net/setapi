@@ -6,46 +6,83 @@ Backend self-hosted com PostgreSQL, Redis, API automática, WebSocket, painel ad
 
 > **v0.1.0 — primeira versão funcional.** Não é um substituto completo do Directus nem foi validado para cargas de produção. Consulte os limites abaixo antes de migrar dados reais.
 
-## Executar com Docker
+## Instalação com três serviços
 
-Pré-requisitos: Docker com Compose v2 e Python 3 para gerar os segredos locais.
+| Serviço | Conteúdo |
+|---|---|
+| `setapi_app` | API, painel, WebSocket e worker de eventos/backups |
+| `setapi_db` | PostgreSQL 17 com volume persistente |
+| `setapi_redis` | Redis 8 com senha e volume persistente |
+
+API e worker são processos supervisionados no mesmo contêiner. Se um deles falhar, o contêiner encerra para que o Docker o reinicie. O healthcheck verifica API, banco, Redis e heartbeat do worker.
+
+### Docker
+
+Pré-requisitos: Docker Engine com Compose v2 e Python 3. O script instala a stack; não instala o Docker no sistema.
 
 ```bash
 git clone https://github.com/daset-net/setapi.git
 cd setapi
-python3 scripts/init_env.py
-# Edite .env: e-mail do administrador e URL do ambiente.
-docker compose up -d --build
-docker compose logs -f api worker
+bash install.sh
 ```
 
-- Painel: **http://localhost:8055**
-- Documentação interativa: **http://localhost:8055/docs**
-- OpenAPI: **http://localhost:8055/openapi.json**
-- O login inicial usa `SETAPI_ADMIN_EMAIL` e `SETAPI_ADMIN_PASSWORD` do `.env`.
-- A criação do administrador ocorre somente se não houver usuários. Alterar a variável depois não redefine uma senha existente.
+O instalador gera `.env` com senhas aleatórias e chave de criptografia, constrói a imagem e aguarda os três serviços ficarem saudáveis. Execuções seguintes preservam as credenciais existentes.
+
+- Painel: **http://localhost:8055**; documentação: **http://localhost:8055/docs**.
+- Login inicial: `admin@setapi.local`; senha em `SETAPI_ADMIN_PASSWORD` no `.env`.
 - A porta é publicada somente em `127.0.0.1`. PostgreSQL e Redis não publicam portas externas.
-- Banco e Redis têm volumes persistentes. **`docker compose down -v` apaga esses volumes.**
+- Os nomes de contêiner são fixos: uma instalação desta stack por host Docker.
 
-## Dockerfile / EasyPanel
+Para personalizar a primeira instalação:
 
-O `Dockerfile` serve tanto a API como o worker. Crie dois serviços usando o mesmo repositório:
+```bash
+bash install.sh --admin-email admin@empresa.com --public-url https://api.empresa.com
+# Configure o proxy HTTPS para encaminhar HTTP e WebSocket à porta 8055.
+```
 
-| Serviço | Comando | Porta |
-|---|---|---|
-| API | Comando padrão do Dockerfile | 8055 |
-| Worker | `python -m app.worker` | Nenhuma |
+Para preparar as ENVs antes de instalar:
 
-Conecte ambos ao mesmo PostgreSQL e Redis, com as mesmas variáveis. No worker, substitua/desative o healthcheck HTTP herdado da imagem; o Compose já configura um check próprio. No EasyPanel, use `python -c "import os,redis; assert redis.Redis.from_url(os.environ['REDIS_URL']).get('setapi:worker:heartbeat')"` como check do worker.
+```bash
+bash install.sh --generate-only
+# Revise .env antes da primeira inicialização.
+bash install.sh
+docker compose logs -f setapi_app
+```
 
-Em produção, configure `SETAPI_PUBLIC_URL=https://seu-dominio`, `SETAPI_COOKIE_SECURE=true`, HTTPS e encaminhamento de WebSocket no proxy. Configure o limite de corpo do proxy igual ou menor que o limite de upload. Aceite `X-Forwarded-For` apenas dos proxies conhecidos (`FORWARDED_ALLOW_IPS`); não use `*` em uma rede não confiável.
+`--port 8055` e `--bind-host 127.0.0.1` controlam a publicação inicial no Docker. Use `--bind-host 0.0.0.0` quando precisar publicar a porta nas interfaces do host. Após gerar `.env`, altere essas opções no próprio arquivo. O administrador só é criado quando não há usuários; trocar a ENV não redefine a senha de um usuário existente. Não altere senhas do banco nem a chave de criptografia de uma instalação existente sem uma migração.
 
-Não há dependência de arquivos de esquema dentro do contêiner: a estrutura e as configurações são persistidas no PostgreSQL. O disco temporário do worker precisa comportar o dump, o bundle e sua cópia criptografada (reserve pelo menos três vezes o tamanho do dump, além de margem).
+O instalador recusa migrar automaticamente a stack antiga com quatro serviços. Pare e revise essa instalação antes de migrar, preservando seus volumes e `.env`. **`docker compose down -v` apaga os volumes.**
+
+### EasyPanel — template Custom
+
+Na cópia local do repositório, execute:
+
+```bash
+bash install.sh --target easypanel --admin-email admin@empresa.com
+```
+
+O comando gera os seguintes arquivos privados em `conexao/instalacao/`:
+
+- `easypanel-template.json`: template completo com os três serviços e suas ENVs.
+- `setapi_app.env`, `setapi_db.env`, `setapi_redis.env`: cópias das configurações e credenciais de cada serviço.
+
+No EasyPanel, abra o projeto, escolha **+ Serviço → Templates → Custom**, cole o conteúdo de `easypanel-template.json` e crie os serviços. O template usa o Dockerfile do repositório público, conecta os serviços pela rede interna e configura a porta 8055 com HTTPS. O nome do projeto e o domínio automático são resolvidos pelos placeholders oficiais do EasyPanel. O script apenas gera o template: a instalação no servidor ocorre ao importá-lo no painel.
+
+Para usar seu domínio, acrescente `--public-url https://api.empresa.com` e configure o DNS para o servidor. Consulte o login e a senha em `setapi_app.env`. Para outro ambiente, use `--output /caminho/privado/nova-instalacao`; uma pasta já preenchida não será sobrescrita.
+
+Esses arquivos contêm segredos, têm permissão de leitura/escrita apenas para o proprietário e são ignorados pelo Git. A geração Docker e a geração EasyPanel criam credenciais independentes; use os arquivos correspondentes ao ambiente instalado. O schema segue a [API oficial de templates do EasyPanel](https://easypanel.io/docs/api/templates/createFromSchema).
+
+Em produção, configure `SETAPI_PUBLIC_URL`, HTTPS e encaminhamento de WebSocket no proxy. Configure o limite de corpo do proxy igual ou menor que o limite de upload. Aceite `X-Forwarded-For` apenas dos proxies conhecidos (`FORWARDED_ALLOW_IPS`).
+
+A estrutura e as configurações persistem no PostgreSQL. Reserve espaço temporário em `setapi_app` para pelo menos três vezes o tamanho do dump, além de margem, durante backups.
 
 ## Configuração
 
 | Variável | Finalidade |
 |---|---|
+| `POSTGRES_PASSWORD` / `REDIS_PASSWORD` | Senhas dos serviços da stack Docker |
+| `SETAPI_BIND_HOST` / `SETAPI_PORT` | Interface e porta publicadas pelo Compose |
+| `SETAPI_RUN_WORKER` | `true` na stack padrão; inicia o worker junto à API |
 | `DATABASE_URL` | Conexão PostgreSQL; banco dedicado recomendado |
 | `REDIS_URL` | Conexão Redis, incluindo senha quando configurada |
 | `SETAPI_ENCRYPTION_KEY` | Chave Fernet de 32 bytes em base64 URL-safe; protege credenciais e backups |
@@ -177,7 +214,7 @@ O agendamento roda no worker. A retenção remove somente backups concluídos do
 docker compose run --rm --no-deps \
   -v "$PWD/backup.setapi:/restore/backup.setapi:ro" \
   -e SETAPI_ENCRYPTION_KEY -e SETAPI_RESTORE_DATABASE_URL \
-  api python -m app.restore /restore/backup.setapi --confirm-database setapi_recuperado
+  setapi_app python -m app.restore /restore/backup.setapi --confirm-database setapi_recuperado
 ```
 
 O comando recusa banco não vazio, valida a integridade criptográfica e restaura em uma transação. Depois revoga tokens antigos, limpa eventos pendentes e pausa agendamentos. Faça login novamente e crie novos tokens. Valide o ambiente recuperado antes de apontar a API para ele. Use a mesma chave original para ler as credenciais restauradas.

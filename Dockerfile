@@ -8,8 +8,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends postgresql-clie
 COPY requirements.lock ./
 RUN pip install --no-cache-dir -r requirements.lock
 COPY --chown=setapi:setapi app ./app
+COPY --chown=setapi:setapi scripts ./scripts
+COPY --chown=setapi:setapi compose.yaml install.sh .env.example ./
 USER 10001:10001
 EXPOSE 8055
-HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8055/health/ready', timeout=3)"
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8055", "--ws-max-size", "65536"]
+HEALTHCHECK --interval=15s --timeout=8s --start-period=90s --retries=3 \
+    CMD python -m app.healthcheck
+CMD ["python", "-m", "app.launcher"]
