@@ -43,3 +43,7 @@ CREATE TABLE IF NOT EXISTS setapi.backups (
  status text NOT NULL DEFAULT 'queued', object_key text, size bigint, checksum text, error text,
  created_at timestamptz NOT NULL DEFAULT now(), finished_at timestamptz
 );
+
+CREATE TABLE IF NOT EXISTS setapi.integrations (
+ name text PRIMARY KEY, value_encrypted text NOT NULL
+);

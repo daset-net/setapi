@@ -27,7 +27,7 @@ function showLogin(){state.user=null;if(state.socket)state.socket.close();$('#co
 $('#login-form').onsubmit=async e=>{e.preventDefault();$('#login-error').textContent='';const button=e.target.querySelector('button');button.disabled=true;try{const f=new FormData(e.target);await api('/auth/login',{method:'POST',body:Object.fromEntries(f)});e.target.reset();await boot();}catch(err){$('#login-error').textContent=err.message;}finally{button.disabled=false;}};
 $('#logout').onclick=async()=>{try{await api('/auth/logout',{method:'POST'});}finally{showLogin();}};
 document.querySelectorAll('[data-page]').forEach(b=>b.onclick=()=>{state.page=b.dataset.page;state.table=null;state.offset=0;render().catch(e=>toast(e.message));});
-async function boot(){state.user=await api('/auth/me');$('#login').hidden=true;$('#console').hidden=false;$('#account').textContent=state.user.email;document.querySelectorAll('[data-admin]').forEach(el=>el.hidden=!state.user.admin);state.page=state.user.admin?'overview':'tables';await render();connect();}
+async function boot(){state.user=await api('/auth/me');$('#login').hidden=true;$('#console').hidden=false;$('#account').textContent=state.user.email;document.querySelectorAll('[data-admin]').forEach(el=>el.hidden=!state.user.admin);const outcome=new URLSearchParams(location.search).get('google');state.page=state.user.admin&&(location.hash==='#storages'||outcome)?'storages':state.user.admin?'overview':'tables';await render();connect();if(outcome){history.replaceState(null,'','/#storages');const messages={connected:'Google Drive conectado. Sua pasta está pronta.',cancelled:'Conexão cancelada. Você pode tentar novamente.',expired:'A autorização expirou. Clique em Conectar com Google novamente.',permission:'Autorize o acesso solicitado para conectar o Drive.',folder:'Esta conta não tem acesso à pasta original. Reconecte com a conta correta.',failed:'Não foi possível conectar. Confira o aplicativo Google e tente novamente.'};toast(messages[outcome]||messages.failed);}}
 async function render(){
  if(!state.user)return;
  state.tables=(await api('/tables')).data;
@@ -64,10 +64,50 @@ async function tokensPage(){
  action('＋ Criar token',()=>modal('Criar token',field('name','Nome da integração')+field('hours','Validade em horas',720,'number')+jsonfield('scopes','Permissões por tabela',state.tables.length?{[state.tables[0].name]:['read']}: {})+'<label class="check"><input type="checkbox" name="admin"> Acesso administrativo completo</label><p class="help">Use permissões mínimas nas aplicações. Ações: read, create, update, delete. Nunca coloque um token administrativo no frontend público.</p>',async f=>{const t=await api('/tokens',{method:'POST',body:{name:f.get('name'),hours:Number(f.get('hours')),scopes:JSON.parse(f.get('scopes')),admin:f.has('admin')}});modal('Token criado',`<p>Copie agora. O segredo não será exibido novamente.</p><div class="secret">${esc(t.token)}</div><p class="help">Envie no cabeçalho Authorization: Bearer TOKEN.</p>`,null);return false;}));
  const rows=(await api('/tokens')).data;$('#content').innerHTML='<div class="card">'+(rows.length?table(['NOME','PREFIXO','ACESSO','VALIDADE',''],rows.map(r=>`<tr><td>${esc(r.name)}</td><td><code>${esc(r.prefix)}…</code></td><td>${r.admin?'Administrativo':esc(JSON.stringify(r.scopes))}</td><td>${esc(new Date(r.expires_at).toLocaleDateString())}</td><td>${r.revoked_at?badge('Revogado',false):`<button class="danger" data-revoke="${esc(r.id)}">Revogar</button>`}</td></tr>`)):empty('Nenhum token de integração','Crie um token para conectar sua aplicação.'))+'</div>';document.querySelectorAll('[data-revoke]').forEach(b=>b.onclick=async()=>{try{await api('/tokens/'+b.dataset.revoke,{method:'DELETE'});await render();toast('Token revogado.');}catch(e){toast(e.message);}});
 }
+async function googleSetup(){
+ const info=await api('/integrations/google/config');
+ modal('Configurar aplicativo Google',
+  '<p>Configuração única do serviço. Depois, basta clicar em Conectar com Google.</p>'+ 
+  '<p class="help">No Google Cloud, ative a API Google Drive, configure a tela de consentimento e crie um cliente OAuth do tipo Aplicativo da Web.</p>'+ 
+  '<label>URI de redirecionamento autorizada<input readonly value="'+esc(info.redirect_uri)+'"></label>'+ 
+  field('client_id','Client ID',info.client_id)+
+  '<label>Client Secret<input name="client_secret" type="password" autocomplete="new-password" '+(info.configured?'placeholder="Deixe vazio para manter o atual"':'required')+'></label>'+ 
+  '<p class="help">O segredo é criptografado e nunca é devolvido ao navegador. Em modo de teste no Google, adicione a conta que vai conectar como usuário de teste.</p>',
+  async f=>{await api('/integrations/google/config',{method:'PUT',body:Object.fromEntries(f)});toast('Google configurado. Agora conecte sua conta.');});
+}
+async function storageDialog(){
+ const google=await api('/integrations/google/config');
+ modal('Conectar storage',field('name','Nome da conexão','Google Drive')+
+  '<label>Provedor<select name="provider" id="provider"><option value="drive">Google Drive</option><option value="s3">S3 compatível</option><option value="r2">Cloudflare R2</option></select></label><div id="provider-fields"></div>',
+  async f=>{
+   const provider=f.get('provider');
+   if(provider==='drive'){
+    const data=await api('/integrations/google/connect',{method:'POST',body:{name:f.get('name')}});
+    window.location.assign(data.url);return false;
+   }
+   const config=Object.fromEntries(['bucket','region','endpoint_url','access_key_id','secret_access_key'].map(k=>[k,f.get(k)||'']));
+   await api('/storages',{method:'POST',body:{name:f.get('name'),provider,config}});
+  },'Conectar com Google');
+ const update=()=>{
+  const provider=$('#provider').value;
+  $('#modal-submit').hidden=provider==='drive'&&!google.configured;
+  $('#modal-submit').textContent=provider==='drive'?'Conectar com Google':'Salvar conexão';
+  if(provider==='drive'){
+   $('#provider-fields').innerHTML='<div class="connection"><span><strong>Google Drive</strong><small>Escolha sua conta e autorize o SETAPI.</small></span>'+badge(google.configured?'Pronto para conectar':'Configuração inicial',google.configured)+'</div><p>Uma pasta exclusiva será criada para os arquivos e backups desta conexão. Não é necessário copiar tokens.</p>'+(google.configured?'':'<p class="help">O administrador precisa cadastrar o aplicativo Google uma vez para habilitar a conexão.</p><button type="button" class="secondary" id="setup-google">Configurar Google</button>');
+   if($('#setup-google'))$('#setup-google').onclick=()=>googleSetup().catch(e=>toast(e.message));
+  }else{
+   $('#provider-fields').innerHTML=field('bucket','Bucket')+field('region','Região',provider==='r2'?'auto':'us-east-1')+
+    '<label>Endpoint HTTPS'+(provider==='s3'?' (opcional para AWS)':'')+'<input name="endpoint_url" type="url" placeholder="'+(provider==='r2'?'https://ACCOUNT_ID.r2.cloudflarestorage.com':'https://s3.exemplo.com')+'" '+(provider==='r2'?'required':'')+'></label>'+field('access_key_id','Access Key ID')+field('secret_access_key','Secret Access Key','','password')+'<p class="help">As credenciais são criptografadas no banco.</p>';
+  }
+ };
+ $('#provider').onchange=update;update();
+}
 async function storagesPage(){
- action('＋ Conectar storage',()=>{modal('Conectar storage',field('name','Nome da conexão')+'<label>Provedor<select name="provider" id="provider"><option value="s3">S3 compatível</option><option value="r2">Cloudflare R2</option><option value="drive">Google Drive</option></select></label>'+jsonfield('config','Configuração',{bucket:'',region:'us-east-1',access_key_id:'',secret_access_key:''})+'<p class="help">Credenciais são criptografadas no banco. No Drive, configure previamente um cliente OAuth e um refresh token com acesso à pasta.</p>',async f=>{await api('/storages',{method:'POST',body:{name:f.get('name'),provider:f.get('provider'),config:JSON.parse(f.get('config'))}});});$('#provider').onchange=e=>{$('[name=config]').value=JSON.stringify(e.target.value==='drive'?{client_id:'',client_secret:'',refresh_token:'',folder_id:''}:{bucket:'',region:e.target.value==='r2'?'auto':'us-east-1',endpoint_url:e.target.value==='r2'?'https://ACCOUNT_ID.r2.cloudflarestorage.com':'',access_key_id:'',secret_access_key:''},null,2);};});
+ action('＋ Conectar storage',()=>storageDialog().catch(e=>toast(e.message)));
  const stores=(await api('/storages')).data,files=(await api('/files')).data;
- $('#content').innerHTML='<div class="card"><h3>Provedores conectados</h3>'+(stores.length?table(['NOME','PROVEDOR',''],stores.map(s=>`<tr><td>${esc(s.name)}</td><td>${badge(s.provider.toUpperCase())}</td><td><button class="secondary" data-test="${esc(s.id)}">Testar conexão</button><button class="secondary" data-upload="${esc(s.id)}">Enviar arquivo</button></td></tr>`)):empty('Conecte seu primeiro storage','S3, Cloudflare R2 ou Google Drive.'))+'</div><div class="card"><h3>Arquivos</h3>'+(files.length?table(['ARQUIVO','TAMANHO',''],files.map(f=>`<tr><td>${esc(f.name)}</td><td>${(f.size/1024).toFixed(1)} KB</td><td><a href="/api/files/${esc(f.id)}/download">Baixar ↓</a></td></tr>`)):empty('Nenhum arquivo enviado','Os arquivos ficam privados no provedor escolhido.'))+'</div>';
+ $('#content').innerHTML='<div class="card"><div class="card-head"><h3>Provedores conectados</h3><button class="secondary" id="google-settings">Configurar Google</button></div>'+(stores.length?table(['NOME','PROVEDOR',''],stores.map(s=>`<tr><td>${esc(s.name)}</td><td>${badge(s.provider.toUpperCase())}</td><td>${s.provider==='drive'?`<button class="secondary" data-reconnect="${esc(s.id)}">Reconectar com Google</button>`:''}<button class="secondary" data-test="${esc(s.id)}">Testar conexão</button><button class="secondary" data-upload="${esc(s.id)}">Enviar arquivo</button></td></tr>`)):empty('Conecte seu primeiro storage','S3, Cloudflare R2 ou Google Drive.'))+'</div><div class="card"><h3>Arquivos</h3>'+(files.length?table(['ARQUIVO','TAMANHO',''],files.map(f=>`<tr><td>${esc(f.name)}</td><td>${(f.size/1024).toFixed(1)} KB</td><td><a href="/api/files/${esc(f.id)}/download">Baixar ↓</a></td></tr>`)):empty('Nenhum arquivo enviado','Os arquivos ficam privados no provedor escolhido.'))+'</div>';
+ $('#google-settings').onclick=()=>googleSetup().catch(e=>toast(e.message));
+ document.querySelectorAll('[data-reconnect]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{const data=await api('/integrations/google/connect',{method:'POST',body:{storage_id:b.dataset.reconnect}});window.location.assign(data.url);}catch(e){toast(e.message);b.disabled=false;}});
  document.querySelectorAll('[data-test]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{await api('/storages/'+b.dataset.test+'/test',{method:'POST'});toast('Conexão validada.');}catch(e){toast(e.message);}finally{b.disabled=false;}});document.querySelectorAll('[data-upload]').forEach(b=>b.onclick=()=>modal('Enviar arquivo','<label>Arquivo<input type="file" name="file" required></label>',async f=>{await api('/files/'+b.dataset.upload,{method:'POST',body:f});toast('Upload concluído.');},'Enviar'));
 }
 async function backupsPage(){

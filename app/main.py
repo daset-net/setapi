@@ -16,6 +16,7 @@ from .security import authenticate, allowed
 from .admin_api import router as admin_router
 from .data_api import router as data_router
 from .storage_api import router as storage_router
+from .google_oauth import router as google_router
 
 
 @asynccontextmanager
@@ -115,6 +116,7 @@ def ready():
 app.include_router(admin_router)
 app.include_router(data_router)
 app.include_router(storage_router)
+app.include_router(google_router)
 
 
 @app.websocket('/ws')

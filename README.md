@@ -182,13 +182,24 @@ Configuração S3:
 
 Para R2, use provedor `r2`, região `auto` e `endpoint_url` como `https://ACCOUNT_ID.r2.cloudflarestorage.com`.
 
-Configuração Google Drive:
+### Google Drive: conectar com Google
 
-```json
-{"client_id":"...","client_secret":"...","refresh_token":"...","folder_id":"..."}
-```
+No painel, abra **Storage e arquivos → Conectar storage → Google Drive → Conectar com Google**. Escolha a conta, autorize e volte ao painel: o SETAPI cria uma pasta exclusiva, salva o refresh token criptografado e deixa a conexão disponível para arquivos e backups. Não é necessário preencher JSON nem gerar tokens manualmente.
 
-O consentimento OAuth e a emissão inicial do refresh token são feitos previamente no Google. A pasta precisa estar acessível ao usuário autorizado e ao escopo escolhido. O painel não tem um assistente OAuth nesta versão. Para outros provedores S3 compatíveis, use `endpoint_url` HTTPS. Outros protocolos exigem um novo adaptador em `app/storage.py`.
+O administrador configura o aplicativo Google **uma única vez**, em **Configurar Google**:
+
+1. No Google Cloud, crie um projeto e ative a API Google Drive.
+2. Configure a tela de consentimento OAuth. Em modo Testing, inclua a conta desejada nos usuários de teste.
+3. Crie credenciais OAuth do tipo **Aplicativo da Web** e cadastre exatamente a URI de redirecionamento exibida no painel: `https://SEU_DOMINIO/api/integrations/google/callback`.
+4. Cole Client ID e Client Secret nos campos do painel. O segredo é criptografado no banco e não é devolvido pela API.
+
+`SETAPI_PUBLIC_URL` precisa corresponder ao domínio HTTPS utilizado. Esse cadastro identifica o SETAPI perante o Google; o repositório não inclui credenciais de um aplicativo Google compartilhado. Consulte a [documentação oficial do OAuth](https://developers.google.com/identity/protocols/oauth2/web-server).
+
+A integração usa o escopo `drive.file`, limitado aos arquivos autorizados/criados pelo aplicativo, e cria uma pasta nova em cada conexão. Não solicita acesso irrestrito ao Drive nem oferece seleção de pastas existentes. O botão **Reconectar com Google** preserva a pasta e exige acesso à pasta original. Conexões antigas criadas manualmente podem precisar de uma nova conexão se a pasta anterior não estiver acessível a esse escopo.
+
+O Google pode expirar refresh tokens de aplicativos externos em modo Testing após sete dias. Para uso contínuo, ajuste o status de publicação e os requisitos de consentimento do seu projeto conforme a documentação Google. O fluxo usa state de uso único com validade de dez minutos, vinculado à sessão administrativa, além de PKCE. Tokens e códigos não são exibidos pelo painel; os logs de acesso do Uvicorn estão desativados para não registrar o código no callback. Configure também seu proxy para não registrar parâmetros desse endpoint.
+
+S3/R2 usam campos individuais no painel: bucket, região, endpoint e chaves de acesso. Para outros provedores S3 compatíveis, use `endpoint_url` HTTPS. Outros protocolos exigem um adaptador em `app/storage.py`.
 
 As conexões são cadastradas antes do teste; o botão **Testar conexão** confirma leitura do bucket/pasta. O teste completo de escrita é um upload real. Credenciais nunca são devolvidas pela API de listagem. Uma conexão existente pode ter suas credenciais atualizadas por `PUT /api/storages/{id}`; mudar bucket ou pasta exige nova conexão para preservar referências antigas.
 
