@@ -1,0 +1,16 @@
+.git
+.github
+conexao
+**/conexao
+.env
+.env.*
+!.env.example
+__pycache__
+**/__pycache__
+.pytest_cache
+.venv
+tests
+test-results
+*.dump
+*.setapi
+*.log

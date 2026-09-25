@@ -1,0 +1,17 @@
+conexao/
+**/conexao/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.dump
+*.setapi
+*.tar
+*.log
+__pycache__/
+.pytest_cache/
+.venv/
+node_modules/
+coverage/
+test-results/
