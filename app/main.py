@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import httpx
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
@@ -37,7 +38,7 @@ async def lifespan(app):
     await asyncio.to_thread(db.stop)
 
 
-app = FastAPI(title='SETAPI', version='0.2.0', description='Self-hosted PostgreSQL API, realtime and storage.', lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+app = FastAPI(title='SETAPI', version='0.3.0', description='Self-hosted PostgreSQL API, realtime and storage.', lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(CORSMiddleware, allow_origins=settings().cors_origins, allow_credentials=False,
                    allow_methods=['GET','POST','PUT','PATCH','DELETE'], allow_headers=['Authorization','Content-Type'])
 
@@ -131,6 +132,14 @@ def ready():
     with db.connection() as conn:
         conn.execute('SELECT 1')
     db.cache.ping()
+    from . import postgrest
+    if postgrest.enabled():
+        try:
+            response = postgrest.HTTP.get('http://127.0.0.1:3001/ready', timeout=2)
+            if response.status_code != 200:
+                raise HTTPException(503, 'Data engine unavailable')
+        except httpx.HTTPError:
+            raise HTTPException(503, 'Data engine unavailable') from None
     return {'status': 'ready'}
 
 

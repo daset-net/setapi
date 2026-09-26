@@ -87,6 +87,8 @@ def values(conn, table, body):
 
 
 def event(conn, table, operation, record_id):
+    if operation == 'schema':
+        conn.execute("NOTIFY pgrst, 'reload schema'")
     # IDs only: payloads never disclose record contents over Pub/Sub.
     conn.execute('INSERT INTO setapi.outbox(table_name,event) VALUES(%s,%s)',
                  (table, Jsonb({'table': table, 'operation': operation, 'id': str(record_id)})))
@@ -102,7 +104,8 @@ def manage(conn,table):
     index='st_'+__import__('hashlib').sha256(table.encode()).hexdigest()[:20]
     conn.execute(sql.SQL('CREATE INDEX IF NOT EXISTS {} ON data.{} (created_at,id)').format(sql.Identifier(index),sql.Identifier(table)))
     conn.execute(sql.SQL('CREATE OR REPLACE TRIGGER setapi_changes AFTER INSERT OR UPDATE OR DELETE ON data.{} FOR EACH ROW EXECUTE FUNCTION setapi.capture_change()').format(sql.Identifier(table)))
-
+    from . import postgrest
+    postgrest.protect(conn, table)
 
 
 def require_managed(conn,table):

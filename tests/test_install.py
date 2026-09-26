@@ -99,6 +99,7 @@ def test_launcher_stops_sibling_when_worker_exits(tmp_path):
 
 
 def test_launcher_defaults_to_api_and_worker(monkeypatch):
+    monkeypatch.setenv('SETAPI_READ_ENGINE', 'native')
     monkeypatch.delenv('SETAPI_RUN_WORKER', raising=False)
     assert len(commands()) == 2
     monkeypatch.setenv('SETAPI_RUN_WORKER', 'false')

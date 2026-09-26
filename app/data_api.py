@@ -2,7 +2,7 @@ import json
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from psycopg import sql
-from . import db, tables, policies
+from . import db, tables, policies, postgrest
 from .security import principal, authorize, audit
 
 router = APIRouter(prefix='/api/data', tags=['Data'])
@@ -37,19 +37,26 @@ def list_records(table: str, limit: int = Query(50, ge=1, le=200), offset: int =
         where = sql.SQL(' AND ').join(clauses) if clauses else sql.SQL('TRUE')
         if field not in readable and field not in ('created_at','id'):
             raise HTTPException(403,'Sorting by this field is not permitted')
-        count = conn.execute(sql.SQL('SELECT count(*) AS total FROM data.{} WHERE {}').format(sql.Identifier(table), where), params).fetchone()['total'] if include_total else None
-        # Named cursor bounds libpq buffering; oversized pages fail without disclosing partial data.
-        rows=[];page_bytes=0
-        with conn.cursor(name='page_'+__import__('secrets').token_hex(8)) as cursor:
-            cursor.itersize=8
-            cursor.execute(sql.SQL('SELECT {} FROM data.{} WHERE {} ORDER BY {} {},id LIMIT %s OFFSET %s').format(
-            sql.SQL(',').join(map(sql.Identifier,readable)), sql.Identifier(table), where, sql.Identifier(field), sql.SQL('DESC' if sort.startswith('-') else 'ASC')),
-            params + [limit, offset])
-            for row in cursor:
-                page_bytes+=len(json.dumps(row,default=str).encode())
-                if page_bytes>2*1024*1024:
-                    raise HTTPException(413,'Result page too large; request a smaller limit')
-                rows.append(row)
+        rule = policies.policy(conn, table, user)
+        if not postgrest.enabled():
+            return _native_list(conn, table, readable, where, params, field, sort, limit, offset, include_total)
+    return postgrest.read(user, table, rule, readable, filters, sort, limit, offset, include_total)
+
+
+def _native_list(conn, table, readable, where, params, field, sort, limit, offset, include_total):
+    count = conn.execute(sql.SQL('SELECT count(*) AS total FROM data.{} WHERE {}').format(sql.Identifier(table), where), params).fetchone()['total'] if include_total else None
+    # Named cursor bounds libpq buffering; oversized pages fail without disclosing partial data.
+    rows=[];page_bytes=0
+    with conn.cursor(name='page_'+__import__('secrets').token_hex(8)) as cursor:
+        cursor.itersize=8
+        cursor.execute(sql.SQL('SELECT {} FROM data.{} WHERE {} ORDER BY {} {},id LIMIT %s OFFSET %s').format(
+        sql.SQL(',').join(map(sql.Identifier,readable)), sql.Identifier(table), where, sql.Identifier(field), sql.SQL('DESC' if sort.startswith('-') else 'ASC')),
+        params + [limit, offset])
+        for row in cursor:
+            page_bytes+=len(json.dumps(row,default=str).encode())
+            if page_bytes>2*1024*1024:
+                raise HTTPException(413,'Result page too large; request a smaller limit')
+            rows.append(row)
     return {'data': rows, 'total': count, 'limit': limit, 'offset': offset}
 
 
@@ -60,7 +67,12 @@ def get_record(table: str, record_id: UUID, user=Depends(principal)):
         tables.require_managed(conn,table)
         readable=policies.fields(conn,table,user,'read')
         scope,params=policies.constraint(conn,table,user)
-        row = conn.execute(sql.SQL('SELECT {} FROM data.{} WHERE id=%s AND {}').format(sql.SQL(',').join(map(sql.Identifier,readable)),sql.Identifier(table),scope), [record_id]+params).fetchone()
+        rule = policies.policy(conn, table, user)
+        if not postgrest.enabled():
+            row = conn.execute(sql.SQL('SELECT {} FROM data.{} WHERE id=%s AND {}').format(sql.SQL(',').join(map(sql.Identifier,readable)),sql.Identifier(table),scope), [record_id]+params).fetchone()
+    if postgrest.enabled():
+        result = postgrest.read(user, table, rule, readable, {'id': str(record_id)}, 'id', 1, 0, False)
+        row = result['data'][0] if result['data'] else None
     if not row:
         raise HTTPException(404, 'Record not found')
     return {'data': row}

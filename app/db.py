@@ -22,7 +22,9 @@ def start():
     with pool.connection() as conn:
         conn.execute('SELECT pg_advisory_xact_lock(73288101)')
         conn.execute(Path(__file__).with_name('schema.sql').read_text())
-        from . import tables
+        from . import tables, postgrest
+        if postgrest.enabled():
+            postgrest.prepare(conn)
         rows=conn.execute("SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='data' AND c.relkind='r'").fetchall()
         for row in rows:
             cols={c['name']:c['type'] for c in tables.columns(conn,row['relname'])}

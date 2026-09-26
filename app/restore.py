@@ -34,7 +34,17 @@ def main():
             with archive.extractfile(member) as src, open(folder / 'database.dump', 'wb') as dst:
                 import shutil
                 shutil.copyfileobj(src, dst)
-        result = subprocess.run(['pg_restore', '--dbname', name, '--no-owner', '--no-acl', '--single-transaction', '--exit-on-error', str(folder / 'database.dump')],
+        # Managed RLS policies reference per-database roles. Recreate them at startup
+        # instead of requiring source-cluster roles on a different restore target.
+        listing = subprocess.run(['pg_restore', '--list', str(folder / 'database.dump')],
+                                 capture_output=True, text=True, timeout=60)
+        if listing.returncode:
+            raise SystemExit('Invalid PostgreSQL backup archive')
+        import re
+        policy = re.compile(r'^\d+; \d+ \d+ POLICY data \S+ setapi_read_(allow|boundary) \S+$')
+        entries = [line for line in listing.stdout.splitlines() if not policy.fullmatch(line)]
+        (folder / 'restore.list').write_text('\n'.join(entries) + '\n')
+        result = subprocess.run(['pg_restore', '--use-list', str(folder / 'restore.list'), '--dbname', name, '--no-owner', '--no-acl', '--single-transaction', '--exit-on-error', str(folder / 'database.dump')],
                                 env=pg_environment(target), capture_output=True, timeout=1800)
         if result.returncode:
             raise SystemExit('Restore failed; verify client version and database privileges. No partial transaction was committed.')

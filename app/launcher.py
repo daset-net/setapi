@@ -9,9 +9,12 @@ import time
 
 def commands():
     result = [[sys.executable, '-m', 'uvicorn', 'app.main:app', '--host', '0.0.0.0',
-               '--port', '8055', '--ws-max-size', '65536', '--no-access-log', '--limit-concurrency', os.getenv('SETAPI_HTTP_CONCURRENCY','1000')]]
+               '--port', '8055', '--timeout-keep-alive', '15', '--ws-max-size', '65536', '--no-access-log', '--limit-concurrency', os.getenv('SETAPI_HTTP_CONCURRENCY','1000')]]
     if os.environ.get('SETAPI_RUN_WORKER', 'true').lower() == 'true':
         result.append([sys.executable, '-m', 'app.worker'])
+    from . import postgrest
+    if postgrest.enabled():
+        result.append([sys.executable, "-m", "app.postgrest"])
     return result
 
 
@@ -48,6 +51,10 @@ def supervise(child_commands, stop=None, grace=20):
 
 
 def main():
+    from . import db, postgrest
+    if postgrest.enabled():
+        db.start()
+        db.stop()
     stop = threading.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.set())

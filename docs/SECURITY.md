@@ -1,4 +1,4 @@
-# Segurança — SETAPI 0.2
+# Segurança — SETAPI 0.3
 
 Esta versão incorpora controles e testes de regressão. Não é uma certificação de segurança, pentest externo ou promessa de risco zero.
 
@@ -66,3 +66,7 @@ Desativar uma organização revoga todos os seus tokens e links de recuperação
 Tokens de integração podem ser criados por um administrador global em nome de um usuário de organização; não podem receber escopos maiores que os do proprietário nem privilégio administrativo global. Herdam as verificações da organização em cada requisição.
 
 Backups, credenciais de storage, configuração OAuth, estrutura e políticas continuam exclusivos da administração global. Os backups da instância contêm todas as organizações e não devem ser distribuídos a membros. Nesta versão não há administradores delegados por organização, múltiplas associações por usuário, migração automática de registros entre organizações ou restauração parcial por organização.
+
+## PostgREST e RLS
+
+As consultas pelo motor PostgREST usam papel restrito e políticas RLS no PostgreSQL, além dos controles da API. JWTs internos não são distribuídos aos clientes; a revogação é verificada também no banco. Permissões por coluna permanecem no gateway. Gravações e administração ainda usam a conexão administrativa existente: esta versão não implementa RLS em todos os caminhos. Consulte [POSTGREST.md](POSTGREST.md) para a fronteira exata, instalação e reversão.

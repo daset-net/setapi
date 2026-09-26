@@ -29,7 +29,28 @@ def client():
         # Only our test rate limit keys, never FLUSHDB on a shared Redis.
         for key in db.cache.scan_iter('setapi:login:*'):
             db.cache.delete(key)
-        yield c
+        from app import postgrest
+        process = None
+        if postgrest.enabled():
+            import subprocess, time, httpx
+            process = subprocess.Popen(['postgrest'], env=postgrest.environment(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            for _ in range(100):
+                try:
+                    if httpx.get('http://127.0.0.1:3001/ready').status_code == 200:
+                        break
+                except httpx.HTTPError:
+                    pass
+                time.sleep(.05)
+            else:
+                process.terminate()
+                process.wait(timeout=5)
+                raise RuntimeError('Test PostgREST failed to start')
+        try:
+            yield c
+        finally:
+            if process:
+                process.terminate()
+                process.wait(timeout=5)
 
 
 @pytest.fixture

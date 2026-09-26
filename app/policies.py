@@ -99,6 +99,8 @@ def put_policy(table:str,body:Policy,user=Depends(admin)):
             if col:
                 name='sp_'+__import__('hashlib').sha256((table+col).encode()).hexdigest()[:20]
                 conn.execute(sql.SQL('CREATE INDEX IF NOT EXISTS {} ON data.{} ({},created_at,id)').format(sql.Identifier(name),sql.Identifier(table),sql.Identifier(col)))
+        from . import postgrest
+        postgrest.protect(conn, table)
         audit(conn,user,'policy.update',table)
     return {'ok':True}
 

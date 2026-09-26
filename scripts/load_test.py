@@ -78,7 +78,7 @@ def main():
     with psycopg.connect(dsn) as conn:
         conn.execute('DROP SCHEMA IF EXISTS setapi CASCADE');conn.execute('DROP SCHEMA IF EXISTS data CASCADE')
     os.environ.update(SETAPI_ENCRYPTION_KEY=Fernet.generate_key().decode(),SETAPI_ADMIN_PASSWORD=secrets.token_urlsafe(24),SETAPI_PUBLIC_URL='http://127.0.0.1:8058',SETAPI_COOKIE_SECURE='false')
-    from app import db,tables
+    from app import db,tables,postgrest
     from app.security import issue,hash_password
     db.start();tokens=[];tenant=uuid4()
     with db.connection() as conn:
@@ -86,6 +86,7 @@ def main():
         conn.execute('CREATE TABLE data.load_records(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now(),owner uuid,tenant uuid,title text)')
         tables.manage(conn,'load_records')
         conn.execute("INSERT INTO setapi.policies VALUES('load_records','owner','tenant',%s,%s)",(Jsonb(['id','title','created_at']),Jsonb(['title'])))
+        postgrest.protect(conn, 'load_records')
         conn.execute('CREATE INDEX load_owner_idx ON data.load_records(owner,tenant,created_at,id)')
         encoded=hash_password(secrets.token_urlsafe(24))
         for i in range(200):
@@ -96,25 +97,29 @@ def main():
     # Dedicated Redis DB only; this database is reserved by the guard above.
     db.cache.flushdb();db.stop()
     log=open('/tmp/setapi-load-server.log','w')
-    api=subprocess.Popen([sys.executable,'-m','uvicorn','app.main:app','--host','127.0.0.1','--port','8058','--no-access-log'],cwd=ROOT,stdout=log,stderr=log)
+    api=subprocess.Popen([sys.executable,'-m','uvicorn','app.main:app','--host','127.0.0.1','--port','8058','--no-access-log','--timeout-keep-alive','15'],cwd=ROOT,stdout=log,stderr=log)
     worker=subprocess.Popen([sys.executable,'-m','app.worker'],cwd=ROOT,stdout=log,stderr=log)
+    rest=subprocess.Popen([sys.executable,'-m','app.postgrest'],cwd=ROOT,stdout=log,stderr=log) if postgrest.enabled() else None
+    processes=[api,worker]+([rest] if rest else [])
     try:
         for _ in range(100):
             try:
                 if httpx.get('http://127.0.0.1:8058/health/ready').status_code==200:break
             except httpx.HTTPError:pass
             time.sleep(.2)
-        report={'date_utc':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'cpu_count':os.cpu_count(),'cpu_affinity':len(os.sched_getaffinity(0)),'database_rows_initial':10000,'api_processes':1,'db_pool_max':20,'notes':'Local shared machine; not a production capacity guarantee. Pre-issued individual student sessions; excludes login/hash cost, uploads and backups. 80% list reads, 20% inserts, owner+tenant+field policy. Includes active WebSockets.','scenarios':[]}
+        else:
+            raise RuntimeError('Load test stack did not become ready')
+        report={'read_engine':os.getenv('SETAPI_READ_ENGINE','native'),'postgrest_version':'16.4' if rest else None,'postgrest_threads':int(os.getenv('SETAPI_POSTGREST_THREADS','1')) if rest else None,'http_keepalive_seconds':15,'date_utc':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'cpu_count':os.cpu_count(),'cpu_affinity':len(os.sched_getaffinity(0)),'database_rows_initial':10000,'api_processes':1,'db_pool_max':20,'notes':'Local shared machine; not a production capacity guarantee. Pre-issued individual student sessions; excludes login/hash cost, uploads and backups. 80% list reads, 20% inserts, owner+tenant+field policy. Includes active WebSockets.','scenarios':[]}
         for clients,pace in [(100,2),(200,2),(100,0)]:
             row=asyncio.run(scenario(tokens,clients,args.seconds,pace));report['scenarios'].append(row);print(json.dumps(row),flush=True)
         report['api_alive']=api.poll() is None;report['worker_alive']=worker.poll() is None
-        for name,proc in [('api',api),('worker',worker)]:
+        for name,proc in [('api',api),('worker',worker)]+([('postgrest',rest)] if rest else []):
             status=Path(f'/proc/{proc.pid}/status').read_text()
             report[name+'_peak_rss_kb']=int(next(line for line in status.splitlines() if line.startswith('VmHWM:')).split()[1])
         args.output.parent.mkdir(parents=True,exist_ok=True);args.output.write_text(json.dumps(report,indent=2)+'\n');print('Report:',args.output)
     finally:
-        for proc in (api,worker):proc.terminate()
-        for proc in (api,worker):
+        for proc in processes:proc.terminate()
+        for proc in processes:
             try:proc.wait(timeout=15)
             except subprocess.TimeoutExpired:proc.kill();proc.wait()
         log.close()

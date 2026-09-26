@@ -48,7 +48,8 @@ def status(user=Depends(admin)):
           (SELECT count(*) FROM setapi.tokens WHERE revoked_at IS NULL AND expires_at>now()) AS tokens,
           (SELECT count(*) FROM setapi.outbox) AS pending_events,
           (SELECT count(*) FROM setapi.backups WHERE status='queued') AS queued_backups''').fetchone()
-    return {'postgres': version, 'redis': db.cache.ping(), 'worker_alive': bool(db.cache.get('setapi:worker:heartbeat')), 'db_pool':db.pool.get_stats(), **counts}
+    from . import postgrest
+    return {'read_engine': 'postgrest' if postgrest.enabled() else 'native', 'postgres': version, 'redis': db.cache.ping(), 'worker_alive': bool(db.cache.get('setapi:worker:heartbeat')), 'db_pool':db.pool.get_stats(), **counts}
 
 
 @router.get('/tables')
@@ -82,13 +83,13 @@ def create_table(body: tables.Table, user=Depends(admin)):
     definitions.extend(tables.column_sql(c) for c in body.columns)
     with db.connection() as conn:
         conn.execute(sql.SQL('CREATE TABLE data.{} ({})').format(sql.Identifier(body.name), sql.SQL(',').join(definitions)))
-        tables.manage(conn,body.name)
         if body.organization_isolated:
             readable=['id','created_at','updated_at']+[c.name for c in body.columns]
             writable=[c.name for c in body.columns]
             conn.execute("INSERT INTO setapi.policies VALUES(%s,NULL,'organization_id',%s,%s)",(body.name,Jsonb(readable),Jsonb(writable)))
             index='so_'+__import__('hashlib').sha256(body.name.encode()).hexdigest()[:20]
             conn.execute(sql.SQL('CREATE INDEX {} ON data.{} (organization_id,created_at,id)').format(sql.Identifier(index),sql.Identifier(body.name)))
+        tables.manage(conn,body.name)
         audit(conn, user, 'table.create', body.name, body.model_dump())
         tables.event(conn, body.name, 'schema', body.name)
     return {'name': body.name, 'endpoint': '/api/data/' + body.name}

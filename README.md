@@ -4,17 +4,19 @@
 
 Backend self-hosted com PostgreSQL, Redis, API automática, WebSocket, painel administrativo, tokens por tabela e storage integrado. O painel usa a mesma API que suas aplicações. Código próprio sob licença MIT, sem limite de faturamento.
 
-> **v0.2.0 — autenticação, isolamento e controles de carga.** Não é um substituto completo do Directus nem foi validado para cargas de produção. Consulte os limites abaixo antes de migrar dados reais.
+> **v0.3.0 — PostgREST privado e RLS nas consultas.** Não é um substituto completo do Directus nem foi validado para cargas de produção. Consulte os limites abaixo antes de migrar dados reais.
+
+As consultas de dados usam **PostgREST 16.4**, com RLS por organização/proprietário, sem mudar as rotas públicas. Escritas continuam transacionais no SETAPI. Veja [arquitetura, ENVs e limites](docs/POSTGREST.md).
 
 ## Instalação com três serviços
 
 | Serviço | Conteúdo |
 |---|---|
-| `setapi_app` | API, painel, WebSocket e worker de eventos/backups |
+| `setapi_app` | API, painel, WebSocket, PostgREST e worker de eventos/backups |
 | `setapi_db` | PostgreSQL 17 com volume persistente |
 | `setapi_redis` | Redis 8 com senha e volume persistente |
 
-API e worker são processos supervisionados no mesmo contêiner. Se um deles falhar, o contêiner encerra para que o Docker o reinicie. O healthcheck verifica API, banco, Redis e heartbeat do worker.
+API, PostgREST e worker são processos supervisionados no mesmo contêiner. Se um deles falhar, o contêiner encerra para que o Docker o reinicie. O healthcheck verifica API, PostgREST, banco, Redis e heartbeat do worker.
 
 ### Docker
 
