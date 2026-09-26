@@ -47,3 +47,30 @@ legend{font-size:11px;font-weight:700;letter-spacing:1px;color:#5d7567;text-tran
 .token-extra{border-top:1px dashed #d9e3da;margin-top:6px}
 .secret{border-radius:10px;border-color:#a9c99a;background:#f4f8f0}
 @media(max-width:650px){.perm-mode{min-width:0;flex:1}.perms-head{flex-direction:column;align-items:stretch}.perms-head select{max-width:none}.row-actions{text-align:left}}
+
+/* Menu lateral mais legível: ícones em traço, rótulos com contraste e estado ativo evidente */
+aside{width:248px;padding:26px 14px;background:linear-gradient(180deg,#153029,#102420);border-right:1px solid #0c1d18}
+main{margin-left:248px;width:calc(100% - 248px)}
+.workspace .brand{padding:0 12px 26px;color:#d6efb8;border-bottom:1px solid #22423699}
+.nav-caption{font-size:9px;letter-spacing:1.8px;font-weight:700;margin:22px 12px 12px;color:#8fae9c}
+nav{gap:3px}
+nav button{color:#cfe0d3;font-size:13px;font-weight:500;gap:12px;padding:11px 13px;box-shadow:none;position:relative}
+.nav-icon{width:19px;height:19px;flex:0 0 19px;color:#8dbf9c;transition:color .15s,transform .12s}
+nav button:hover{background:#1f3a30;color:#fff}
+nav button:hover .nav-icon{color:#bfe0a4}
+nav button.active{background:#24483a;color:#fff;font-weight:600;box-shadow:none}
+nav button.active .nav-icon{color:#c4e7a3}
+nav button.active::before{content:"";position:absolute;left:0;top:9px;bottom:9px;width:3px;border-radius:3px;background:#b1dc8d}
+.aside-bottom a{color:#cadfce;font-weight:500}
+.aside-bottom a:hover{color:#fff}
+@media(max-width:1000px){aside{width:214px;padding:22px 10px}main{margin-left:214px;width:calc(100% - 214px)}nav button{font-size:12px;padding:10px}}
+@media(max-width:650px){aside{width:100%;padding:14px 12px}main{margin-left:0;width:100%}aside nav{gap:6px}nav button{padding:9px 11px}nav button.active::before{display:none}.nav-icon{width:17px;height:17px;flex-basis:17px}}
+
+/* Fluxos guiados de organização, usuário e token */
+.steps{display:grid;gap:10px;margin:4px 0 0}
+.step{display:flex;gap:14px;align-items:flex-start;padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:#fbfcfa}
+.step b{display:flex;align-items:center;justify-content:center;width:26px;height:26px;flex:0 0 26px;border-radius:50%;background:#e4f0e2;color:#2f6b4b;font-size:12px}
+.step span{font-size:13px;color:#4c6156;line-height:1.6}
+.step-done b{background:var(--green);color:#fff}
+.locked-org{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:13px 15px;border:1px solid #d7e6d3;border-radius:12px;background:#f2f8ef;font-size:13px;font-weight:600;color:#2c5a43;margin:18px 0}
+.row-actions{white-space:nowrap}

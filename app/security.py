@@ -55,12 +55,16 @@ def validate_scopes(scopes):
     return scopes
 
 
+NEVER_EXPIRES = datetime(9999, 12, 31, 12, tzinfo=timezone.utc)
+
+
 def issue(conn, user_id, name, kind='api', scopes=None, admin=False, hours=720):
     token = 'set_' + secrets.token_urlsafe(40)
+    expires_at = NEVER_EXPIRES if hours is None else datetime.now(timezone.utc) + timedelta(hours=hours)
     row = conn.execute('''INSERT INTO setapi.tokens(user_id,name,digest,prefix,kind,scopes,admin,expires_at)
       VALUES(%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id,name,prefix,expires_at''',
       (user_id, name, hashlib.sha256(token.encode()).hexdigest(), token[:12], kind,
-       Jsonb(scopes or {}), admin, datetime.now(timezone.utc) + timedelta(hours=hours))).fetchone()
+       Jsonb(scopes or {}), admin, expires_at)).fetchone()
     return dict(row, token=token)
 
 

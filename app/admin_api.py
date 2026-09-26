@@ -208,7 +208,7 @@ def toggle_user(user_id: UUID, body: Active, user=Depends(admin)):
 class TokenCreate(BaseModel):
     user_id: UUID | None = None
     name: str = Field(min_length=1, max_length=100)
-    hours: int = Field(default=720, ge=1, le=8760)
+    hours: int | None = Field(default=720, ge=1, le=8760)
     admin: bool = False
     scopes: dict[str, list[str]] = Field(default_factory=dict)
 

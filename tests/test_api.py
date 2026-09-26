@@ -123,3 +123,13 @@ def test_authenticated_cookie_csrf_and_request_limits(admin_client):
         yield b'"}'
     response=c.post('/api/tables',content=chunks(),headers={'Content-Type':'application/json'})
     assert response.status_code==413,response.text
+
+
+def test_token_without_expiry_stays_valid(admin_client):
+    c=admin_client;name=unique();create_table(c,name)
+    token=c.post('/api/tokens',json={'name':'Sem expiração','hours':None,'scopes':{name:['read']}}).json()
+    assert token['expires_at'].startswith('9999-12-31')
+    assert c.get('/api/data/'+name,headers={'Authorization':'Bearer '+token['token']}).status_code==200
+    listed=next(t for t in c.get('/api/tokens').json()['data'] if t['id']==token['id'])
+    assert listed['expires_at'].startswith('9999-12-31')
+    assert c.post('/api/tokens',json={'name':'Fora do limite','hours':9000}).status_code==422
