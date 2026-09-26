@@ -18,7 +18,7 @@ function badge(text,ok=true){return `<span class="badge ${ok?'':'muted'}">${esc(
 function field(name,label,value='',type='text'){return `<label>${esc(label)}<input name="${esc(name)}" type="${type}" value="${esc(value)}" required></label>`;}
 function jsonfield(name,label,value){return `<label>${esc(label)}<textarea name="${esc(name)}" spellcheck="false">${esc(JSON.stringify(value,null,2))}</textarea></label>`;}
 function modal(title,fields,submit,label='Salvar'){
- $('#modal-title').textContent=title;$('#modal-fields').innerHTML=fields;$('#modal-error').textContent='';$('#modal-submit').textContent=label;$('#modal-submit').hidden=!submit;
+ $('#modal-title').textContent=title;$('#modal-fields').innerHTML=fields;bindModalFields($('#modal-fields'));$('#modal-error').textContent='';$('#modal-submit').textContent=label;$('#modal-submit').hidden=!submit;
  $('#modal-form').onsubmit=async e=>{e.preventDefault();const button=$('#modal-submit');button.disabled=true;try{const close=await submit(new FormData(e.target));if(close!==false){$('#modal').close();await render();}}catch(err){$('#modal-error').textContent=err.message;}finally{button.disabled=false;}};
  if(!$('#modal').open)$('#modal').showModal();
 }
@@ -63,13 +63,23 @@ async function tablesPage(){
 function confirmDelete(title,name,fn){modal(title,`<p>Esta ação remove os dados permanentemente. Para confirmar, digite <strong>${esc(name)}</strong>.</p>`+field('confirm','Confirmação'),async f=>{if(f.get('confirm')!==name)throw Error('A confirmação não corresponde.');await fn();toast('Operação concluída.');},'Excluir permanentemente');}
 async function usersPage(){
  const organizations=(await api('/organizations')).data;
- action('＋ Novo usuário',()=>modal('Novo usuário',field('email','E-mail','','email')+field('password','Senha inicial (mínimo 12 caracteres)','','password')+'<label>Perfil<select name="role"><option value="member">Membro · permissões por tabela</option><option value="admin">Administrador</option></select></label>'+'<label>Tipo de usuário<select name="audience"><option value="panel">Painel</option><option value="app">Aplicativo (aluno)</option></select></label>'+organizationSelect(organizations)+'<p class="help">Administradores globais devem ficar sem organização. Contas vinculadas acessam apenas sua organização.</p>'+permissionsFields(),async f=>{await api('/users',{method:'POST',body:{email:f.get('email'),password:f.get('password'),role:f.get('role'),scopes:permissionValues(f),audience:f.get('audience')||'panel',tenant_id:f.get('tenant_id')||null}});}));
- const rows=(await api('/users')).data;$('#content').innerHTML='<div class="card">'+table(['E-MAIL','ORGANIZAÇÃO','PERFIL','STATUS',''],rows.map(r=>`<tr><td>${esc(r.email)}</td><td>${esc(organizations.find(o=>o.id===r.tenant_id)?.name||'Conta global/pessoal')}</td><td>${esc(r.role)}</td><td>${badge(r.active?'Ativo':'Inativo',r.active)}</td><td>${r.id!==state.user.id?`<button class="secondary" data-access="${esc(r.id)}">Permissões</button><button class="secondary" data-toggle="${esc(r.id)}" data-active="${!r.active}">${r.active?'Desativar':'Ativar'}</button>`:''}</td></tr>`))+'</div><p class="help">Membros recebem acesso apenas às tabelas configuradas. Configure também a política da tabela para limitar registros e campos. Os tokens precisam permitir a operação.</p>';document.querySelectorAll('[data-access]').forEach(b=>b.onclick=()=>{const u=rows.find(x=>x.id===b.dataset.access);modal('Permissões do usuário',organizationSelect(organizations,u.tenant_id)+permissionsFields(u.scopes),async f=>{await api('/users/'+u.id+'/access',{method:'PUT',body:{scopes:permissionValues(f),tenant_id:f.get('tenant_id')||null}});});});document.querySelectorAll('[data-toggle]').forEach(b=>b.onclick=async()=>{try{await api('/users/'+b.dataset.toggle,{method:'PATCH',body:{active:b.dataset.active==='true'}});await render();}catch(e){toast(e.message);}});
+ action('＋ Novo usuário',()=>modal('Novo usuário',field('email','E-mail','','email')+field('password','Senha inicial (mínimo 12 caracteres)','','password')+'<label>Perfil<select name="role"><option value="member">Membro · permissões por tabela</option><option value="admin">Administrador</option></select></label>'+'<label>Tipo de usuário<select name="audience"><option value="panel">Painel</option><option value="app">Aplicativo (aluno)</option></select></label>'+organizationSelect(organizations)+'<p class="help">Administradores globais devem ficar sem organização. Contas vinculadas acessam apenas sua organização.</p>'+permissionsFields()+tokenSection(),async f=>{
+  const scopes=permissionValues(f),role=f.get('role');
+  const created=await api('/users',{method:'POST',body:{email:f.get('email'),password:f.get('password'),role:role,scopes:scopes,audience:f.get('audience')||'panel',tenant_id:f.get('tenant_id')||null}});
+  if(!f.has('with_token'))return;
+  const token=await api('/tokens',{method:'POST',body:{name:f.get('token_name')||('Token de '+created.email),user_id:created.id,hours:Number(f.get('token_hours'))||720,scopes:tokenScopes(f.get('token_mode'),scopes,role),admin:false}});
+  showSecret(token,created.email);return false;
+ },'Criar usuário'));
+ const rows=(await api('/users')).data;$('#content').innerHTML='<div class="card">'+table(['E-MAIL','ORGANIZAÇÃO','PERFIL','STATUS',''],rows.map(r=>`<tr><td>${esc(r.email)}</td><td>${esc(organizations.find(o=>o.id===r.tenant_id)?.name||'Conta global/pessoal')}</td><td>${esc(r.role)}</td><td>${badge(r.active?'Ativo':'Inativo',r.active)}</td><td class="row-actions">${r.active?`<button class="secondary" data-token="${esc(r.id)}">＋ Token</button>`:''}${r.id!==state.user.id?`<button class="secondary" data-access="${esc(r.id)}">Permissões</button><button class="secondary" data-toggle="${esc(r.id)}" data-active="${!r.active}">${r.active?'Desativar':'Ativar'}</button>`:''}</td></tr>`))+'</div><p class="help">Membros recebem acesso apenas às tabelas configuradas. Configure também a política da tabela para limitar registros e campos. Os tokens precisam permitir a operação.</p>';
+ document.querySelectorAll('[data-token]').forEach(b=>b.onclick=()=>tokenDialog(rows.find(x=>x.id===b.dataset.token),rows));
+ document.querySelectorAll('[data-access]').forEach(b=>b.onclick=()=>{const u=rows.find(x=>x.id===b.dataset.access);modal('Permissões do usuário',organizationSelect(organizations,u.tenant_id)+permissionsFields(u.scopes),async f=>{await api('/users/'+u.id+'/access',{method:'PUT',body:{scopes:permissionValues(f),tenant_id:f.get('tenant_id')||null}});});});
+ document.querySelectorAll('[data-toggle]').forEach(b=>b.onclick=async()=>{try{await api('/users/'+b.dataset.toggle,{method:'PATCH',body:{active:b.dataset.active==='true'}});await render();}catch(e){toast(e.message);}});
 }
 async function tokensPage(){
  const owners=(await api('/users')).data.filter(u=>u.active);
- action('＋ Criar token',()=>modal('Criar token',field('name','Nome da integração')+'<label>Usuário responsável<select name="user_id"><option value="">Minha conta global</option>'+owners.filter(u=>u.id!==state.user.id).map(u=>`<option value="${esc(u.id)}">${esc(u.email)} · ${esc((state.organizations||[]).find(o=>o.id===u.tenant_id)?.name||'Sem organização')}</option>`).join('')+'</select></label><p class="help">Para uma integração da organização, escolha um usuário vinculado a ela. O token herda o isolamento e não pode ampliar as permissões do usuário.</p>'+field('hours','Validade em horas',720,'number')+permissionsFields()+'<label class="check"><input type="checkbox" name="admin"> Acesso administrativo completo</label><p class="help">Use permissões mínimas nas aplicações. Ações: read, create, update, delete. Nunca coloque um token administrativo no frontend público.</p>',async f=>{const t=await api('/tokens',{method:'POST',body:{name:f.get('name'),user_id:f.get('user_id')||null,hours:Number(f.get('hours')),scopes:permissionValues(f),admin:f.has('admin')}});modal('Token criado',`<p>Copie agora. O segredo não será exibido novamente.</p><div class="secret">${esc(t.token)}</div><p class="help">Envie no cabeçalho Authorization: Bearer TOKEN.</p>`,null);return false;}));
- const rows=(await api('/tokens')).data;$('#content').innerHTML='<div class="card">'+(rows.length?table(['NOME','PREFIXO','ACESSO','VALIDADE',''],rows.map(r=>`<tr><td>${esc(r.name)}</td><td><code>${esc(r.prefix)}…</code></td><td>${r.admin?'Administrativo':esc(JSON.stringify(r.scopes))}</td><td>${esc(new Date(r.expires_at).toLocaleDateString())}</td><td>${r.revoked_at?badge('Revogado',false):`<button class="danger" data-revoke="${esc(r.id)}">Revogar</button>`}</td></tr>`)):empty('Nenhum token de integração','Crie um token para conectar sua aplicação.'))+'</div>';document.querySelectorAll('[data-revoke]').forEach(b=>b.onclick=async()=>{try{await api('/tokens/'+b.dataset.revoke,{method:'DELETE'});await render();toast('Token revogado.');}catch(e){toast(e.message);}});
+ action('＋ Criar token',()=>tokenDialog(null,owners));
+ const rows=(await api('/tokens')).data;$('#content').innerHTML='<div class="card">'+(rows.length?table(['NOME','USUÁRIO','PREFIXO','ACESSO','VALIDADE',''],rows.map(r=>`<tr><td>${esc(r.name)}</td><td>${esc((owners.find(u=>u.id===r.user_id)||{}).email||'—')}</td><td><code>${esc(r.prefix)}…</code></td><td>${r.admin?badge('Administrativo'):scopeSummary(r.scopes)}</td><td>${esc(new Date(r.expires_at).toLocaleDateString())}</td><td class="row-actions">${r.revoked_at?badge('Revogado',false):`<button class="danger" data-revoke="${esc(r.id)}">Revogar</button>`}</td></tr>`)):empty('Nenhum token de integração','Crie um token para conectar sua aplicação.'))+'</div><p class="help">Você também cria um token direto na página Usuários, junto com o usuário ou pelo botão Token da linha.</p>';
+ document.querySelectorAll('[data-revoke]').forEach(b=>b.onclick=async()=>{try{await api('/tokens/'+b.dataset.revoke,{method:'DELETE'});await render();toast('Token revogado.');}catch(e){toast(e.message);}});
 }
 async function googleSetup(){
  const info=await api('/integrations/google/config');
@@ -131,8 +141,58 @@ let reconnectTimer, refreshTimer;
 function connect(){clearTimeout(reconnectTimer);if(state.socket){state.socket.onclose=null;state.socket.close();}if(!state.user)return;state.subscribed=JSON.stringify(state.tables.map(t=>t.name));const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');state.socket=ws;ws.onopen=()=>ws.send(JSON.stringify({tables:state.tables.map(t=>t.name)}));ws.onmessage=e=>{const msg=JSON.parse(e.data);if(msg.type==='ready'){$('#live-status').textContent='● Tempo real conectado';if(state.page==='tables')render().catch(()=>{});}if(msg.type==='change'){clearTimeout(refreshTimer);refreshTimer=setTimeout(()=>{if(state.page==='tables')render().catch(e=>toast(e.message));},200);}};ws.onclose=()=>{$('#live-status').textContent='○ Reconectando';if(state.user)reconnectTimer=setTimeout(connect,3000);};}
 boot().catch(()=>showLogin());
 
-function permissionsFields(value={}){
- return state.tables.map(t=>`<fieldset><legend>${esc(t.name)}</legend>${['read','create','update','delete'].map((a,i)=>`<label class="check"><input type="checkbox" name="perm:${esc(t.name)}:${a}" ${(value[t.name]||[]).includes(a)?'checked':''}>${['Ler','Criar','Editar','Excluir'][i]}</label>`).join('')}</fieldset>`).join('')||'<p>Crie uma tabela antes de atribuir permissões.</p>';
+const PERM_MODES={none:[],read:['read'],write:['create','update','delete'],full:['read','create','update','delete']};
+const PERM_LABELS={none:'Sem acesso',read:'Somente leitura',write:'Somente escrita',full:'Leitura e escrita',custom:'Personalizado',same:'Mesmas permissões do usuário'};
+function permissionMode(actions){const list=actions||[];for(const mode of ['none','read','write','full'])if(PERM_MODES[mode].length===list.length&&PERM_MODES[mode].every(a=>list.includes(a)))return mode;return 'custom';}
+function permissionOptions(selected,keys){return keys.map(k=>`<option value="${k}" ${k===selected?'selected':''}>${PERM_LABELS[k]}</option>`).join('');}
+function permissionsFields(value={},title='Permissões por tabela'){
+ if(!state.tables.length)return '<p class="help">Crie uma tabela antes de atribuir permissões.</p>';
+ const names=['Ler','Criar','Editar','Excluir'];
+ return `<div class="perms"><div class="perms-head"><span>${esc(title)}</span><select class="perm-all" aria-label="Aplicar o mesmo acesso a todas as tabelas"><option value="">Aplicar a todas…</option>${permissionOptions('',['none','read','write','full'])}</select></div>`+state.tables.map(t=>{
+  const actions=value[t.name]||[],mode=permissionMode(actions);
+  return `<div class="perm-row"><span class="perm-name">${esc(t.name)}</span><select class="perm-mode" aria-label="Acesso de ${esc(t.name)}">${permissionOptions(mode,['none','read','write','full','custom'])}</select><div class="perm-custom">${['read','create','update','delete'].map((a,i)=>`<label class="check"><input type="checkbox" data-action="${a}" name="perm:${esc(t.name)}:${a}" ${actions.includes(a)?'checked':''}>${names[i]}</label>`).join('')}</div></div>`;
+ }).join('')+'</div><p class="help">Somente leitura consulta registros. Somente escrita cria, edita e exclui sem consultar. Leitura e escrita reúne as duas.</p>';
+}
+function bindModalFields(root){
+ root.querySelectorAll('.perm-row').forEach(row=>{
+  const select=row.querySelector('.perm-mode'),custom=row.querySelector('.perm-custom'),boxes=[...custom.querySelectorAll('input')];
+  const apply=()=>{custom.hidden=select.value!=='custom';if(select.value!=='custom')boxes.forEach(b=>b.checked=PERM_MODES[select.value].includes(b.dataset.action));};
+  select.onchange=apply;apply();
+ });
+ const all=root.querySelector('.perm-all');
+ if(all)all.onchange=()=>{if(!all.value)return;root.querySelectorAll('.perm-row .perm-mode').forEach(s=>{s.value=all.value;s.onchange();});all.value='';};
+ const toggle=root.querySelector('[name="with_token"]'),extra=root.querySelector('.token-extra');
+ if(toggle&&extra){const show=()=>extra.hidden=!toggle.checked;toggle.onchange=show;show();}
+}
+function tokenSection(){
+ return `<fieldset class="token-block"><legend>Token de acesso</legend><label class="check"><input type="checkbox" name="with_token">Criar um token de API junto com este usuário</label><div class="token-extra" hidden><label>Nome do token<input name="token_name" placeholder="Aplicativo do aluno"></label><label>Validade em horas<input name="token_hours" type="number" value="720" min="1" max="8760"></label><label>Acesso do token<select name="token_mode">${permissionOptions('same',['same','read','write','full'])}</select></label><p class="help">O token nunca ultrapassa as permissões do usuário acima. O segredo aparece uma única vez.</p></div></fieldset>`;
+}
+function tokenScopes(mode,userScopes,role){
+ if(mode==='same')return userScopes;
+ const wanted=PERM_MODES[mode]||[],result={};
+ const names=role==='admin'?state.tables.map(t=>t.name):Object.keys(userScopes);
+ for(const name of names){const base=role==='admin'?PERM_MODES.full:(userScopes[name]||[]);const actions=wanted.filter(a=>base.includes(a));if(actions.length)result[name]=actions;}
+ return result;
+}
+function scopeSummary(scopes){
+ const keys=Object.keys(scopes||{});
+ if(!keys.length)return badge('Sem tabelas',false);
+ return keys.slice(0,3).map(t=>badge(t+' · '+PERM_LABELS[permissionMode(scopes[t])])).join(' ')+(keys.length>3?` <small>+${keys.length-3}</small>`:'');
+}
+function showSecret(token,who){
+ modal('Token criado',`<p>Copie agora${who?' o token de '+esc(who):''}. O segredo não será exibido novamente.</p><div class="secret">${esc(token.token)}</div><p class="help">Envie no cabeçalho <code>Authorization: Bearer TOKEN</code>. Para revogar, use a página Tokens de acesso.</p>`,async()=>{},'Concluído');
+}
+function tokenDialog(owner,owners){
+ const organizations=state.organizations||[];
+ const ownerName=o=>`${o.email} · ${(organizations.find(x=>x.id===o.tenant_id)||{}).name||'Sem organização'}`;
+ const ownerField=owner
+  ?`<input type="hidden" name="user_id" value="${esc(owner.id)}"><p class="help">Token vinculado a <strong>${esc(ownerName(owner))}</strong>. Ele herda o isolamento da organização e não pode ampliar as permissões do usuário.</p>`
+  :'<label>Usuário responsável<select name="user_id"><option value="">Minha conta global</option>'+owners.filter(u=>u.id!==state.user.id).map(u=>`<option value="${esc(u.id)}">${esc(ownerName(u))}</option>`).join('')+'</select></label><p class="help">Para uma integração da organização, escolha um usuário vinculado a ela.</p>';
+ const global=!owner||(owner.role==='admin'&&!owner.tenant_id);
+ modal('Criar token de acesso',field('name','Nome da integração')+ownerField+field('hours','Validade em horas',720,'number')+permissionsFields(owner?owner.scopes:{},'Permissões do token')+(global?'<label class="check"><input type="checkbox" name="admin"> Acesso administrativo completo</label>':'')+'<p class="help">Use permissões mínimas nas aplicações. Nunca coloque um token administrativo no frontend público.</p>',async f=>{
+  const created=await api('/tokens',{method:'POST',body:{name:f.get('name'),user_id:f.get('user_id')||null,hours:Number(f.get('hours')),scopes:permissionValues(f),admin:f.has('admin')}});
+  showSecret(created,owner?owner.email:null);return false;
+ },'Criar token');
 }
 function permissionValues(f){const result={};for(const [k] of f.entries()){if(!k.startsWith('perm:'))continue;const [,t,a]=k.split(':');(result[t]??=[]).push(a);}return result;}
 function columnFields(value={}){

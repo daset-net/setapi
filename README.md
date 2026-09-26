@@ -170,7 +170,9 @@ POST /api/tables
 }
 ```
 
-No painel, crie um token com os escopos necessários:
+No painel, crie o token em **Usuários**, junto com o usuário (marque *Criar um token de API junto com este usuário*) ou pelo botão **Token** da linha de um usuário já existente. A página **Tokens de acesso** continua disponível para tokens da sua conta global.
+
+Para cada tabela, escolha o acesso: **Somente leitura**, **Somente escrita** (criar, editar e excluir), **Leitura e escrita** ou **Personalizado**, que abre as quatro operações. O seletor *Aplicar a todas…* repete a mesma escolha em todas as tabelas. Os escopos resultantes são os mesmos da API:
 
 ```json
 {"clientes": ["read", "create", "update", "delete"]}
