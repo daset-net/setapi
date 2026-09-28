@@ -1,6 +1,7 @@
 """Admin-only, session-bound Google Drive authorization."""
 import base64
 import hashlib
+import os
 import re
 import secrets
 from urllib.parse import urlencode
@@ -12,7 +13,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from . import db, storage
 from .config import settings
-from .security import admin, audit
+from .security import admin, audit, is_admin, storage_manager
 
 router = APIRouter(prefix='/api/integrations/google', tags=['Google Drive OAuth'])
 SCOPE = 'https://www.googleapis.com/auth/drive.file'
@@ -20,20 +21,28 @@ CALLBACK = '/api/integrations/google/callback'
 
 
 def client_config():
+    # The server's own Google app (set once in the deployment) makes connecting a single click.
+    client_id = os.environ.get('SETAPI_GOOGLE_CLIENT_ID', '').strip()
+    client_secret = os.environ.get('SETAPI_GOOGLE_CLIENT_SECRET', '').strip()
+    if client_id and client_secret:
+        return {'client_id': client_id, 'client_secret': client_secret}
     with db.connection() as conn:
         row = conn.execute("SELECT value_encrypted FROM setapi.integrations WHERE name='google'").fetchone()
     return storage.decrypt(row['value_encrypted']) if row else {}
 
 
-def session_admin(user=Depends(admin)):
+def session_manager(user=Depends(storage_manager)):
+    # Authorization happens in the browser, so it always belongs to a panel session.
     if user['kind'] != 'session':
         raise HTTPException(403, 'Entre no painel para conectar sua conta Google.')
     return user
 
 
 @router.get('/config')
-def get_config(user=Depends(admin)):
+def get_config(user=Depends(storage_manager)):
     config = client_config()
+    if not is_admin(user):
+        return {'configured': bool(config)}
     return {'configured': bool(config), 'client_id': config.get('client_id', ''),
             'redirect_uri': settings().public_url + CALLBACK}
 
@@ -64,30 +73,33 @@ class Connect(BaseModel):
 
 
 @router.post('/connect')
-def connect(body: Connect, user=Depends(session_admin)):
+def connect(body: Connect, user=Depends(session_manager)):
     config = client_config()
     if not config:
-        raise HTTPException(409, 'Configure o aplicativo Google uma vez em Configurar Google.')
+        raise HTTPException(409, 'Conexão com Google indisponível: defina SETAPI_GOOGLE_CLIENT_ID e SETAPI_GOOGLE_CLIENT_SECRET no servidor.')
     folder = None
+    organization = user.get('tenant_id')
     if not body.storage_id:
         with db.connection() as conn:
-            if conn.execute('SELECT 1 FROM setapi.storages WHERE name=%s', (body.name,)).fetchone():
+            if conn.execute('SELECT 1 FROM setapi.storages WHERE organization_id IS NOT DISTINCT FROM %s AND name=%s', (organization, body.name)).fetchone():
                 raise HTTPException(409, 'Já existe uma conexão com esse nome. Use Reconectar com Google ou escolha outro nome.')
     if body.storage_id:
         with db.connection() as conn:
-            adapter = storage.get(conn, body.storage_id)
+            adapter = storage.get(conn, body.storage_id, storage.scope(user))
+        organization = adapter.organization_id
         if adapter.provider != 'drive':
             raise HTTPException(422, 'A conexão não é Google Drive.')
         folder = adapter.config['folder_id']
     state, verifier = secrets.token_urlsafe(32), secrets.token_urlsafe(48)
     callback = settings().public_url + CALLBACK
     payload = dict(config, name=body.name, storage_id=str(body.storage_id) if body.storage_id else None,
-                   folder_id=folder, token_id=str(user['token_id']), verifier=verifier, redirect_uri=callback)
+                   folder_id=folder, token_id=str(user['token_id']), verifier=verifier, redirect_uri=callback,
+                   organization_id=str(organization) if organization else None)
     db.cache.setex('setapi:google:state:' + state, 600, storage.encrypt(payload))
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
     return {'url': 'https://accounts.google.com/o/oauth2/v2/auth?' + urlencode({
         'client_id': config['client_id'], 'redirect_uri': callback, 'response_type': 'code',
-        'scope': SCOPE, 'access_type': 'offline', 'prompt': 'consent select_account',
+        'scope': SCOPE, 'access_type': 'offline', 'prompt': 'consent',
         'state': state, 'code_challenge': challenge, 'code_challenge_method': 'S256'})}
 
 
@@ -97,7 +109,7 @@ def result(status):
 
 
 @router.get('/callback', include_in_schema=False)
-def callback(request: Request, user=Depends(session_admin)):
+def callback(request: Request, user=Depends(session_manager)):
     state = request.query_params.get('state', '')
     if not re.fullmatch(r'[A-Za-z0-9_-]{40,100}', state):
         return result('expired')
@@ -143,13 +155,13 @@ def callback(request: Request, user=Depends(session_admin)):
         storage.validate('drive', saved)
         with db.connection() as conn:
             if config['storage_id']:
-                row = conn.execute("UPDATE setapi.storages SET config_encrypted=%s WHERE id=%s AND provider='drive' RETURNING id",
-                    (storage.encrypt(saved), config['storage_id'])).fetchone()
+                row = conn.execute("UPDATE setapi.storages SET config_encrypted=%s WHERE id=%s AND provider='drive' AND organization_id IS NOT DISTINCT FROM %s RETURNING id",
+                    (storage.encrypt(saved), config['storage_id'], config.get('organization_id'))).fetchone()
                 if not row:
                     return result('failed')
             else:
-                row = conn.execute("INSERT INTO setapi.storages(name,provider,config_encrypted) VALUES(%s,'drive',%s) RETURNING id",
-                    (config['name'], storage.encrypt(saved))).fetchone()
+                row = conn.execute("INSERT INTO setapi.storages(name,provider,config_encrypted,organization_id) VALUES(%s,'drive',%s,%s) RETURNING id",
+                    (config['name'], storage.encrypt(saved), config.get('organization_id'))).fetchone()
             audit(conn, user, 'google.connect', str(row['id']))
         return result('connected')
     except (httpx.HTTPError, KeyError, ValueError, errors.UniqueViolation):

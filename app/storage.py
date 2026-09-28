@@ -126,8 +126,19 @@ class Storage:
             r.raise_for_status()
 
 
-def get(conn, storage_id):
+ANY = object()
+
+
+def scope(user):
+    """Organization whose storage the user may touch; ANY for the global administrator."""
+    from .security import is_admin
+    return ANY if is_admin(user) else user.get('tenant_id')
+
+
+def get(conn, storage_id, organization=ANY):
     row = conn.execute('SELECT * FROM setapi.storages WHERE id=%s', (storage_id,)).fetchone()
-    if not row:
+    if not row or (organization is not ANY and row['organization_id'] != organization):
         raise HTTPException(404, 'Storage not found')
-    return Storage(row['provider'], decrypt(row['config_encrypted']))
+    adapter = Storage(row['provider'], decrypt(row['config_encrypted']))
+    adapter.organization_id = row['organization_id']
+    return adapter

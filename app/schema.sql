@@ -101,3 +101,7 @@ DO $$ BEGIN
   UPDATE setapi.files f SET organization_id=u.tenant_id FROM setapi.users u WHERE f.owner_id=u.id;
  END IF;
 END $$;
+-- Each organization owns its storage connections; NULL marks platform storage (backups).
+ALTER TABLE setapi.storages ADD COLUMN IF NOT EXISTS organization_id uuid REFERENCES setapi.organizations(id) ON DELETE RESTRICT;
+ALTER TABLE setapi.storages DROP CONSTRAINT IF EXISTS storages_name_key;
+CREATE UNIQUE INDEX IF NOT EXISTS storages_scope_name_idx ON setapi.storages(COALESCE(organization_id,'00000000-0000-0000-0000-000000000000'::uuid),name);

@@ -132,3 +132,19 @@ def test_google_requires_panel_session_and_unique_name(admin_client):
     response=admin_client.post('/api/storages',json={'name':'Duplicate OAuth name','provider':'drive','config':{'client_id':CLIENT,'client_secret':SECRET,'refresh_token':'old','folder_id':'folder'}})
     assert response.status_code==201
     assert admin_client.post('/api/integrations/google/connect',json={'name':'Duplicate OAuth name'}).status_code==409
+
+
+def test_google_client_from_environment_needs_no_panel_setup(admin_client,monkeypatch):
+    with db.connection() as conn:
+        conn.execute("DELETE FROM setapi.integrations WHERE name='google'")
+    monkeypatch.delenv('SETAPI_GOOGLE_CLIENT_ID',raising=False)
+    assert not admin_client.get('/api/integrations/google/config').json()['configured']
+    assert admin_client.post('/api/integrations/google/connect',json={'name':'Env app'}).status_code==409
+    monkeypatch.setenv('SETAPI_GOOGLE_CLIENT_ID','env-client.apps.googleusercontent.com')
+    monkeypatch.setenv('SETAPI_GOOGLE_CLIENT_SECRET','env-secret')
+    assert admin_client.get('/api/integrations/google/config').json()['configured']
+    query=begin(admin_client,name='Env app')
+    assert query['client_id']==['env-client.apps.googleusercontent.com'] and query['prompt']==['consent']
+    calls=provider(monkeypatch)
+    assert finish(admin_client,query,code='code').headers['location']=='/?google=connected#storages'
+    assert calls[0][1]['data']['client_secret']=='env-secret'

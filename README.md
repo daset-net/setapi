@@ -97,6 +97,7 @@ A estrutura e as configurações persistem no PostgreSQL. Reserve espaço tempor
 | `SETAPI_WS_MAX` / `SETAPI_HTTP_CONCURRENCY` | Limites por processo, padrão 1000 |
 | `SETAPI_ALLOW_REGISTRATION` | Cadastro público de alunos; desativado por padrão |
 | `SETAPI_SMTP_HOST/PORT/FROM/USER/PASSWORD` | Recuperação/verificação de e-mail; TLS obrigatório |
+| `SETAPI_GOOGLE_CLIENT_ID` / `SETAPI_GOOGLE_CLIENT_SECRET` | Aplicativo OAuth do Google usado pelo botão Conectar Google |
 | `SETAPI_STORAGE_HOSTS` | Allowlist de hosts HTTPS para S3 compatível, além de AWS/R2 |
 
 Guarde a chave de criptografia separadamente do servidor e dos backups. Perder essa chave impede recuperar credenciais e abrir backups. A chave ainda não tem rotação automática.
@@ -229,14 +230,16 @@ Para R2, use provedor `r2`, região `auto` e `endpoint_url` como `https://ACCOUN
 
 ### Google Drive: conectar com Google
 
-No painel, abra **Storage e arquivos → Conectar storage → Google Drive → Conectar com Google**. Escolha a conta, autorize e volte ao painel: o SETAPI cria uma pasta exclusiva, salva o refresh token criptografado e deixa a conexão disponível para arquivos e backups. Não é necessário preencher JSON nem gerar tokens manualmente.
+No painel, abra **Storage e arquivos → Conectar storage → Google Drive → Conectar Google**. O Google abre na hora: quem não está logado informa e-mail e senha; quem já está logado vai direto para a tela de autorização. Ao voltar, o SETAPI cria uma pasta exclusiva, salva o refresh token criptografado e deixa a conexão disponível para arquivos e backups.
 
-O administrador configura o aplicativo Google **uma única vez**, em **Configurar Google**:
+Cada organização conecta o **próprio** Drive: o usuário de painel da organização entra no SETAPI, abre **Storage e arquivos** e clica em Conectar Google com a conta dele. A conexão, a pasta e os arquivos ficam vinculados à organização; as outras não enxergam nem usam. O administrador global vê todas as conexões, com a coluna Organização. Backups do banco vão somente para storage da plataforma (criado pelo administrador global), porque contêm os dados de todas as organizações.
+
+Para o botão funcionar, quem instala o servidor registra o aplicativo Google **uma única vez**, nas variáveis de ambiente:
 
 1. No Google Cloud, crie um projeto e ative a API Google Drive.
-2. Configure a tela de consentimento OAuth. Em modo Testing, inclua a conta desejada nos usuários de teste.
-3. Crie credenciais OAuth do tipo **Aplicativo da Web** e cadastre exatamente a URI de redirecionamento exibida no painel: `https://SEU_DOMINIO/api/integrations/google/callback`.
-4. Cole Client ID e Client Secret nos campos do painel. O segredo é criptografado no banco e não é devolvido pela API.
+2. Configure a tela de consentimento OAuth.
+3. Crie credenciais OAuth do tipo **Aplicativo da Web** com a URI de redirecionamento `https://SEU_DOMINIO/api/integrations/google/callback`.
+4. Defina `SETAPI_GOOGLE_CLIENT_ID` e `SETAPI_GOOGLE_CLIENT_SECRET` e reinicie o serviço.
 
 `SETAPI_PUBLIC_URL` precisa corresponder ao domínio HTTPS utilizado. Esse cadastro identifica o SETAPI perante o Google; o repositório não inclui credenciais de um aplicativo Google compartilhado. Consulte a [documentação oficial do OAuth](https://developers.google.com/identity/protocols/oauth2/web-server).
 

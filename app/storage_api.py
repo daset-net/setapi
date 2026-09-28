@@ -8,7 +8,7 @@ from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 from . import db, storage
 from .config import settings
-from .security import admin, principal, is_admin, audit
+from .security import admin, principal, is_admin, audit, can_manage_storage, storage_manager
 
 router = APIRouter(prefix='/api', tags=['Storage and backups'])
 
@@ -19,33 +19,42 @@ class StorageCreate(BaseModel):
     config: dict
 
 
+def name_taken(conn, organization_id, name, exclude=None):
+    return conn.execute('SELECT 1 FROM setapi.storages WHERE organization_id IS NOT DISTINCT FROM %s AND name=%s AND id IS DISTINCT FROM %s',
+                        (organization_id, name, exclude)).fetchone() is not None
+
+
 @router.get('/storages')
-def list_storages(user=Depends(admin)):
+def list_storages(user=Depends(storage_manager)):
     with db.connection() as conn:
-        return {'data': conn.execute('SELECT id,name,provider,created_at FROM setapi.storages ORDER BY name').fetchall()}
+        return {'data': conn.execute('SELECT id,name,provider,organization_id,created_at FROM setapi.storages WHERE %s OR organization_id=%s ORDER BY name',
+                                     (is_admin(user), user.get('tenant_id'))).fetchall()}
 
 
 @router.post('/storages', status_code=201)
-def create_storage(body: StorageCreate, user=Depends(admin)):
+def create_storage(body: StorageCreate, user=Depends(storage_manager)):
     storage.validate(body.provider, body.config)
+    organization = user.get('tenant_id')
     with db.connection() as conn:
-        row = conn.execute('INSERT INTO setapi.storages(name,provider,config_encrypted) VALUES(%s,%s,%s) RETURNING id,name,provider',
-            (body.name, body.provider, storage.encrypt(body.config))).fetchone()
+        if name_taken(conn, organization, body.name):
+            raise HTTPException(409, 'Já existe uma conexão com esse nome.')
+        row = conn.execute('INSERT INTO setapi.storages(name,provider,config_encrypted,organization_id) VALUES(%s,%s,%s,%s) RETURNING id,name,provider,organization_id',
+            (body.name, body.provider, storage.encrypt(body.config), organization)).fetchone()
         audit(conn, user, 'storage.create', str(row['id']))
     return row
 
 
 @router.put('/storages/{storage_id}')
-def update_storage(storage_id: UUID, body: StorageCreate, user=Depends(admin)):
+def update_storage(storage_id: UUID, body: StorageCreate, user=Depends(storage_manager)):
     storage.validate(body.provider, body.config)
     with db.connection() as conn:
-        existing = conn.execute('SELECT provider FROM setapi.storages WHERE id=%s', (storage_id,)).fetchone()
-        if not existing:
-            raise HTTPException(404, 'Storage not found')
-        if existing['provider'] != body.provider:
+        current = storage.get(conn, storage_id, storage.scope(user))
+        if current.provider != body.provider:
             raise HTTPException(409, 'Create a new connection to change provider')
+        if name_taken(conn, current.organization_id, body.name, storage_id):
+            raise HTTPException(409, 'Já existe uma conexão com esse nome.')
         # Existing file keys must keep referring to the same bucket/folder.
-        previous = storage.get(conn, storage_id).config
+        previous = current.config
         for key in ('bucket', 'endpoint_url', 'folder_id'):
             if previous.get(key) != body.config.get(key):
                 raise HTTPException(409, 'Destination cannot change; create a new connection')
@@ -55,9 +64,9 @@ def update_storage(storage_id: UUID, body: StorageCreate, user=Depends(admin)):
 
 
 @router.post('/storages/{storage_id}/test')
-def test_storage(storage_id: UUID, user=Depends(admin)):
+def test_storage(storage_id: UUID, user=Depends(storage_manager)):
     with db.connection() as conn:
-        adapter = storage.get(conn, storage_id)
+        adapter = storage.get(conn, storage_id, storage.scope(user))
     try:
         adapter.test()
     except Exception:
@@ -65,17 +74,27 @@ def test_storage(storage_id: UUID, user=Depends(admin)):
     return {'ok': True}
 
 
+def visible_files(user):
+    """SQL filter and parameters for the files this user may see."""
+    if is_admin(user):
+        return 'true', ()
+    if can_manage_storage(user):
+        return 'organization_id=%s', (user['tenant_id'],)
+    return 'owner_id=%s AND organization_id IS NOT DISTINCT FROM %s', (user['id'], user.get('tenant_id'))
+
+
 @router.get('/files')
 def list_files(user=Depends(principal)):
+    where, params = visible_files(user)
     with db.connection() as conn:
-        return {'data': conn.execute('SELECT id,storage_id,owner_id,name,size,content_type,created_at FROM setapi.files WHERE (%s OR (owner_id=%s AND organization_id IS NOT DISTINCT FROM %s)) ORDER BY created_at DESC LIMIT 200', (is_admin(user), user['id'],user.get('tenant_id'))).fetchall()}
+        return {'data': conn.execute('SELECT id,storage_id,owner_id,name,size,content_type,created_at FROM setapi.files WHERE ' + where + ' ORDER BY created_at DESC LIMIT 200', params).fetchall()}
 
 
 @router.post('/files/{storage_id}', status_code=201)
-def upload_file(storage_id: UUID, file: UploadFile, user=Depends(admin)):
-    # Upload is administrative in v0.1; app tokens cannot consume arbitrary storage.
+def upload_file(storage_id: UUID, file: UploadFile, user=Depends(storage_manager)):
+    # Only panel users upload, and only into their organization's storage; app tokens never do.
     with db.connection() as conn:
-        adapter = storage.get(conn, storage_id)
+        adapter = storage.get(conn, storage_id, storage.scope(user))
     fd, path = tempfile.mkstemp()
     size = 0
     key = None
@@ -94,7 +113,7 @@ def upload_file(storage_id: UUID, file: UploadFile, user=Depends(admin)):
             row = conn.execute('''INSERT INTO setapi.files(id,storage_id,owner_id,name,object_key,content_type,size,organization_id)
                 VALUES(%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id,name,size''',
                 (file_id, storage_id, user['id'], Path(file.filename or 'file').name[:255], key,
-                 file.content_type or 'application/octet-stream', size,user.get('tenant_id'))).fetchone()
+                 file.content_type or 'application/octet-stream', size, adapter.organization_id)).fetchone()
             audit(conn, user, 'file.upload', str(file_id))
         return row
     except Exception:
@@ -111,8 +130,9 @@ def upload_file(storage_id: UUID, file: UploadFile, user=Depends(admin)):
 
 @router.get('/files/{file_id}/download')
 def download_file(file_id: UUID, user=Depends(principal)):
+    where, params = visible_files(user)
     with db.connection() as conn:
-        row = conn.execute('SELECT * FROM setapi.files WHERE id=%s AND (%s OR (owner_id=%s AND organization_id IS NOT DISTINCT FROM %s))', (file_id, is_admin(user), user['id'],user.get('tenant_id'))).fetchone()
+        row = conn.execute('SELECT * FROM setapi.files WHERE id=%s AND ' + where, (file_id, *params)).fetchone()
         if not row:
             raise HTTPException(404, 'File not found')
         adapter = storage.get(conn, row['storage_id'])
@@ -130,10 +150,15 @@ class BackupCreate(BaseModel):
     storage_id: UUID
 
 
+def platform_storage(conn, storage_id):
+    # A backup is the whole database; it must never land in one organization's storage.
+    return storage.get(conn, storage_id, None)
+
+
 @router.post('/backups', status_code=202)
 def queue_backup(body: BackupCreate, user=Depends(admin)):
     with db.connection() as conn:
-        storage.get(conn, body.storage_id)
+        platform_storage(conn, body.storage_id)
         pending = conn.execute("SELECT count(*) AS n FROM setapi.backups WHERE status IN ('queued','running')").fetchone()['n']
         if pending >= 5:
             raise HTTPException(429, 'Backup queue is full')
@@ -157,7 +182,7 @@ class ScheduleCreate(BaseModel):
 @router.post('/backup-schedules', status_code=201)
 def create_schedule(body: ScheduleCreate, user=Depends(admin)):
     with db.connection() as conn:
-        storage.get(conn, body.storage_id)
+        platform_storage(conn, body.storage_id)
         row = conn.execute('INSERT INTO setapi.schedules(storage_id,every_hours,retention) VALUES(%s,%s,%s) RETURNING *',
             (body.storage_id, body.every_hours, body.retention)).fetchone()
         audit(conn, user, 'backup.schedule', str(row['id']))
@@ -178,9 +203,10 @@ def delete_schedule(schedule_id: UUID, user=Depends(admin)):
 
 
 @router.delete('/files/{file_id}',status_code=204)
-def delete_file(file_id:UUID,user=Depends(admin)):
+def delete_file(file_id:UUID,user=Depends(storage_manager)):
+    where,params=visible_files(user)
     with db.connection() as conn:
-        row=conn.execute('SELECT * FROM setapi.files WHERE id=%s FOR UPDATE',(file_id,)).fetchone()
+        row=conn.execute('SELECT * FROM setapi.files WHERE id=%s AND '+where+' FOR UPDATE',(file_id,*params)).fetchone()
         if not row:raise HTTPException(404,'File not found')
         try:storage.get(conn,row['storage_id']).delete(row['object_key'])
         except Exception:raise HTTPException(502,'Provider deletion failed; retry later')
@@ -189,8 +215,9 @@ def delete_file(file_id:UUID,user=Depends(admin)):
 
 
 @router.delete('/storages/{storage_id}',status_code=204)
-def delete_storage(storage_id:UUID,user=Depends(admin)):
+def delete_storage(storage_id:UUID,user=Depends(storage_manager)):
     with db.connection() as conn:
+        storage.get(conn,storage_id,storage.scope(user))
         # RESTRICT foreign keys preserve connections referenced by files/backups/schedules.
         conn.execute('DELETE FROM setapi.storages WHERE id=%s',(storage_id,))
         audit(conn,user,'storage.delete',str(storage_id))

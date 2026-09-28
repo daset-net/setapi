@@ -105,6 +105,17 @@ def admin(user=Depends(principal)):
     return user
 
 
+def can_manage_storage(user):
+    # Organization panel users connect their own storage; app users and API tokens never do.
+    return is_admin(user) or (user.get('audience') == 'panel' and user.get('tenant_id') is not None and user['kind'] == 'session')
+
+
+def storage_manager(user=Depends(principal)):
+    if not can_manage_storage(user):
+        raise HTTPException(403, 'Storage management requires the panel')
+    return user
+
+
 def allowed(user, table, action):
     if is_admin(user):
         return True
