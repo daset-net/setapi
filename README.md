@@ -100,6 +100,15 @@ A estrutura e as configurações persistem no PostgreSQL. Reserve espaço tempor
 | `SETAPI_GOOGLE_CLIENT_ID` / `SETAPI_GOOGLE_CLIENT_SECRET` | Aplicativo OAuth do Google usado pelo botão Conectar Google |
 | `SETAPI_STORAGE_HOSTS` | Allowlist de hosts HTTPS para S3 compatível, além de AWS/R2 |
 
+`SETAPI_ADMIN_EMAIL` e `SETAPI_ADMIN_PASSWORD` só criam o primeiro administrador, quando o banco está vazio. Alterá-las depois não muda o login. Para aplicar os valores atuais (recuperar o acesso ou trocar e-mail/senha), abra o console do serviço e rode:
+
+```bash
+python -m app.reset_admin              # redefine a senha, ou cria o administrador com esse e-mail
+python -m app.reset_admin --disable-mfa  # também desliga a verificação em duas etapas
+```
+
+As sessões abertas dessa conta são encerradas. O comando não promove membros de organização nem usuários do app; o administrador anterior, se tinha outro e-mail, continua existindo e pode ser desativado em Usuários.
+
 Guarde a chave de criptografia separadamente do servidor e dos backups. Perder essa chave impede recuperar credenciais e abrir backups. A chave ainda não tem rotação automática.
 
 PostgreSQL e Redis são configurados por variáveis de ambiente para permitir bootstrap e recuperação. O painel mostra seu estado; conexões S3/R2/Drive são configuradas pelo painel. Alterar a conexão principal requer reiniciar API e worker.
