@@ -227,6 +227,23 @@ Notificações contêm identificadores, não o conteúdo dos registros. Faça um
 
 Tabelas gerenciadas possuem trigger transacional: INSERT/UPDATE/DELETE feitos diretamente no PostgreSQL também geram eventos. Escritas SQL externas exigem uma conta de banco confiável; as políticas da API não se aplicam a quem recebe credenciais SQL. Alterações de estrutura ficam disponíveis sem restart. Ao criar tabelas, clientes externos precisam reabrir a assinatura com a nova lista.
 
+## Servidor MCP
+
+O SETAPI é também um servidor MCP (Streamable HTTP) em `/mcp`, para IAs e agentes usarem a API inteira. Conecte com a URL e um token do SETAPI:
+
+```json
+{"mcpServers": {"setapi": {"type": "http", "url": "https://SEU_DOMINIO/mcp",
+  "headers": {"Authorization": "Bearer set_..."}}}}
+```
+
+- **Uma ferramenta por rota REST**, geradas da especificação OpenAPI: rota nova vira ferramenta sem mudar o MCP. Os nomes seguem a função da rota (`create_table`, `add_column`, `rename_column`, `edit_column`, `drop_column`, `drop_table`, `list_records`, `create_record`, `update_record`, `delete_record`, `upload_file` e as demais).
+- **Mesmo comportamento da API**: cada chamada é repassada à própria API REST com o token recebido. Validação, permissões, políticas por tabela, limites de taxa e registro de atividade são os da REST.
+- **Argumentos**: parâmetros de caminho e de consulta no nível de cima; o corpo JSON da rota em `body`. A resposta é `{"status", "body"}`, com o mesmo código HTTP e o mesmo corpo da REST; erros HTTP voltam com `isError`.
+- **Arquivos** vão e voltam em base64 (`upload_file`, `download_file`), no limite de `SETAPI_MAX_UPLOAD_MB`.
+- Use um **token administrativo** para criar e alterar tabelas e campos. Um token de organização só enxerga o que aquela organização pode acessar.
+
+O servidor é sem sessão: responde JSON em POST, sem stream de eventos (GET e DELETE em `/mcp` devolvem 405). Requisições com `Origin` fora de `SETAPI_PUBLIC_URL` e `SETAPI_CORS_ORIGINS` são recusadas.
+
 ## Storage
 
 Configuração S3:

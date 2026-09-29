@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, ConfigDict
 from psycopg import sql
 from psycopg.types.json import Jsonb
@@ -71,6 +71,7 @@ def list_tables(user=Depends(principal)):
 
 @router.post('/tables', status_code=201)
 def create_table(body: tables.Table, user=Depends(admin)):
+    """Create a table with id, created_at, updated_at and the given fields. Its records are served at /api/data/{name}."""
     tables.identifier(body.name)
     if len({c.name for c in body.columns}) != len(body.columns):
         raise HTTPException(422, 'Duplicate columns')
@@ -97,6 +98,7 @@ def create_table(body: tables.Table, user=Depends(admin)):
 
 @router.post('/tables/{table}/columns', status_code=201)
 def add_column(table: str, body: tables.Column, user=Depends(admin)):
+    """Add a field to an existing table."""
     definition = tables.column_sql(body)
     with db.connection() as conn:
         tables.exists(conn, table)
@@ -107,11 +109,12 @@ def add_column(table: str, body: tables.Column, user=Depends(admin)):
 
 
 class Rename(BaseModel):
-    name: str
+    name: str = Field(description='New field name: ' + tables.NAME_RULE + '.')
 
 
 @router.patch('/tables/{table}/columns/{column}')
 def rename_column(table: str, column: str, body: Rename, user=Depends(admin)):
+    """Rename a field. Its data is kept."""
     tables.identifier(column)
     tables.identifier(body.name)
     if column in tables.RESERVED or body.name in tables.RESERVED:
@@ -126,7 +129,8 @@ def rename_column(table: str, column: str, body: Rename, user=Depends(admin)):
 
 
 @router.delete('/tables/{table}/columns/{column}', status_code=204)
-def drop_column(table: str, column: str, confirm: str, user=Depends(admin)):
+def drop_column(table: str, column: str, confirm: str = Query(description='Must be exactly "table.column", to confirm.'), user=Depends(admin)):
+    """Delete a field and its data. System fields cannot be deleted."""
     tables.identifier(column)
     if column in tables.RESERVED or confirm != f'{table}.{column}':
         raise HTTPException(422, 'Confirm the exact table.column; system columns cannot be deleted')
@@ -139,7 +143,8 @@ def drop_column(table: str, column: str, confirm: str, user=Depends(admin)):
 
 
 @router.delete('/tables/{table}', status_code=204)
-def drop_table(table: str, confirm: str, user=Depends(admin)):
+def drop_table(table: str, confirm: str = Query(description='Must be exactly the table name, to confirm.'), user=Depends(admin)):
+    """Delete a table and all its records. Fails while other tables reference it."""
     if confirm != table:
         raise HTTPException(422, 'Confirm the exact table name')
     with db.connection() as conn:
@@ -284,13 +289,14 @@ def drop_index(table:str,index:str,user=Depends(admin)):
 
 
 class ColumnEdit(BaseModel):
-    type:str
-    nullable:bool=True
-    confirm:str
+    type:str=Field(description='New type, one of: '+', '.join(tables.TYPES)+'. Existing values are converted.')
+    nullable:bool=Field(True,description='false makes the field required.')
+    confirm:str=Field(description='Must be exactly "table.column", to confirm.')
 
 
 @router.put('/tables/{table}/columns/{column}')
 def edit_column(table:str,column:str,body:ColumnEdit,user=Depends(admin)):
+    """Change a field's type and whether it is required."""
     if column in tables.RESERVED or body.type not in tables.TYPES or body.confirm!=table+'.'+column:
         raise HTTPException(422,'Confirm the exact table.column and a supported type')
     with db.connection() as conn:

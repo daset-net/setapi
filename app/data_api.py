@@ -10,7 +10,10 @@ router = APIRouter(prefix='/api/data', tags=['Data'])
 
 @router.get('/{table}')
 def list_records(table: str, limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0, le=10000),
-                 sort: str = '-created_at', filter: str = '{}', include_total: bool = True, user=Depends(principal)):
+                 sort: str = Query('-created_at', description='Field to sort by; prefix with - for descending.'),
+                 filter: str = Query('{}', description='JSON object of equality conditions, e.g. {"status":"ativo"}; at most 20.'),
+                 include_total: bool = True, user=Depends(principal)):
+    """List records of a table, paginated with limit and offset."""
     authorize(user, table, 'read')
     with db.connection() as conn:
         tables.require_managed(conn,table)

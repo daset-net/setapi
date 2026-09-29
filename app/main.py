@@ -22,6 +22,7 @@ from .data_api import router as data_router
 from .storage_api import router as storage_router
 from .google_oauth import router as google_router
 from .mail_api import router as mail_router
+from .mcp import router as mcp_router
 from .accounts import router as accounts_router
 from .organizations import router as organizations_router
 from .policies import router as policies_router
@@ -44,6 +45,12 @@ app.add_middleware(CORSMiddleware, allow_origins=settings().cors_origins, allow_
                    allow_methods=['GET','POST','PUT','PATCH','DELETE'], allow_headers=['Authorization','Content-Type'])
 
 
+def upload_limit(path):
+    # MCP carries files as base64 inside JSON, about 4/3 of their size.
+    megabytes = settings().max_upload_mb + 1
+    return (megabytes * 4 // 3 + 1 if path == '/mcp' else megabytes) * 1024 * 1024
+
+
 class BodyLimitMiddleware:
     """Bound streamed bodies too, including requests without Content-Length."""
     def __init__(self, app):
@@ -53,7 +60,7 @@ class BodyLimitMiddleware:
         if scope['type'] != 'http':
             return await self.app(scope, receive, send)
         upload = scope['path'].startswith('/api/files/') and scope['method'] == 'POST'
-        limit = (settings().max_upload_mb + 1) * 1024 * 1024 if upload else 1024 * 1024
+        limit = upload_limit(scope['path']) if upload or scope['path'] == '/mcp' else 1024 * 1024
         consumed = 0
 
         async def bounded_receive():
@@ -87,7 +94,7 @@ async def headers(request: Request, call_next):
                 size = int(length)
             except ValueError:
                 return JSONResponse({'detail': 'Invalid Content-Length'}, status_code=400)
-            limit = (settings().max_upload_mb + 1) * 1024 * 1024 if request.url.path.startswith('/api/files/') else 1024 * 1024
+            limit = upload_limit(request.url.path) if request.url.path.startswith('/api/files/') or request.url.path == '/mcp' else 1024 * 1024
             if size < 0:
                 return JSONResponse({'detail': 'Invalid Content-Length'}, status_code=400)
             if size > limit:
@@ -149,6 +156,7 @@ app.include_router(data_router)
 app.include_router(storage_router)
 app.include_router(google_router)
 app.include_router(mail_router)
+app.include_router(mcp_router)
 app.include_router(accounts_router)
 app.include_router(organizations_router)
 app.include_router(policies_router)

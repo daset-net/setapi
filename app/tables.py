@@ -15,20 +15,23 @@ def identifier(value):
     return value
 
 
+NAME_RULE = 'lowercase letters, numbers and underscores, starting with a letter; at most 48 characters'
+
+
 class Column(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    name: str
-    type: str = 'text'
-    nullable: bool = True
-    unique: bool = False
-    references: str | None = None
+    name: str = Field(description='Field name: ' + NAME_RULE + '. id, created_at and updated_at are reserved.')
+    type: str = Field('text', description='One of: ' + ', '.join(TYPES) + '.')
+    nullable: bool = Field(True, description='false makes the field required.')
+    unique: bool = Field(False, description='true rejects repeated values.')
+    references: str | None = Field(None, description='Name of another table; links to its id. Requires type uuid.')
 
 
 class Table(BaseModel):
-    organization_isolated: bool = False
+    organization_isolated: bool = Field(False, description='true adds organization_id and each organization sees only its own records.')
     model_config = ConfigDict(extra='forbid')
-    name: str
-    columns: list[Column] = Field(default_factory=list, max_length=100)
+    name: str = Field(description='Table name: ' + NAME_RULE + '.')
+    columns: list[Column] = Field(default_factory=list, max_length=100, description='Fields to create. id, created_at and updated_at are added automatically.')
 
 
 def column_sql(column):
