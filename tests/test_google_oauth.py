@@ -148,3 +148,19 @@ def test_google_client_from_environment_needs_no_panel_setup(admin_client,monkey
     calls=provider(monkeypatch)
     assert finish(admin_client,query,code='code').headers['location']=='/?google=connected#storages'
     assert calls[0][1]['data']['client_secret']=='env-secret'
+
+
+def test_panel_google_app_overrides_environment_and_can_be_removed(admin_client,monkeypatch):
+    with db.connection() as conn:
+        conn.execute("DELETE FROM setapi.integrations WHERE name='google'")
+    monkeypatch.setenv('SETAPI_GOOGLE_CLIENT_ID','env-client.apps.googleusercontent.com')
+    monkeypatch.setenv('SETAPI_GOOGLE_CLIENT_SECRET','env-secret')
+    assert admin_client.get('/api/integrations/google/config').json()['source']=='environment'
+    configure(admin_client)
+    data=admin_client.get('/api/integrations/google/config').json()
+    assert data['source']=='panel' and data['client_id']==CLIENT
+    assert begin(admin_client,name='Panel app')['client_id']==[CLIENT]
+    assert admin_client.delete('/api/integrations/google/config').status_code==204
+    assert admin_client.get('/api/integrations/google/config').json()['source']=='environment'
+    monkeypatch.delenv('SETAPI_GOOGLE_CLIENT_ID')
+    assert admin_client.get('/api/integrations/google/config').json()=={'configured':False,'client_id':'','source':None,'redirect_uri':'http://testserver/api/integrations/google/callback'}

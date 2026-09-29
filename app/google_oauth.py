@@ -20,15 +20,22 @@ SCOPE = 'https://www.googleapis.com/auth/drive.file'
 CALLBACK = '/api/integrations/google/callback'
 
 
-def client_config():
-    # The server's own Google app (set once in the deployment) makes connecting a single click.
-    client_id = os.environ.get('SETAPI_GOOGLE_CLIENT_ID', '').strip()
-    client_secret = os.environ.get('SETAPI_GOOGLE_CLIENT_SECRET', '').strip()
-    if client_id and client_secret:
-        return {'client_id': client_id, 'client_secret': client_secret}
+def panel_config():
     with db.connection() as conn:
         row = conn.execute("SELECT value_encrypted FROM setapi.integrations WHERE name='google'").fetchone()
     return storage.decrypt(row['value_encrypted']) if row else {}
+
+
+def environment_config():
+    client_id = os.environ.get('SETAPI_GOOGLE_CLIENT_ID', '').strip()
+    client_secret = os.environ.get('SETAPI_GOOGLE_CLIENT_SECRET', '').strip()
+    return {'client_id': client_id, 'client_secret': client_secret} if client_id and client_secret else {}
+
+
+def client_config():
+    # The platform's Google app, saved by the global administrator in Settings, makes connecting a
+    # single click for every organization. The deployment variables remain a fallback.
+    return panel_config() or environment_config()
 
 
 def session_manager(user=Depends(storage_manager)):
@@ -40,10 +47,12 @@ def session_manager(user=Depends(storage_manager)):
 
 @router.get('/config')
 def get_config(user=Depends(storage_manager)):
-    config = client_config()
+    panel = panel_config()
+    config = panel or environment_config()
     if not is_admin(user):
         return {'configured': bool(config)}
     return {'configured': bool(config), 'client_id': config.get('client_id', ''),
+            'source': 'panel' if panel else 'environment' if config else None,
             'redirect_uri': settings().public_url + CALLBACK}
 
 
@@ -56,7 +65,7 @@ class ClientConfig(BaseModel):
 def put_config(body: ClientConfig, user=Depends(admin)):
     if not re.fullmatch(r'[A-Za-z0-9_-]+\.apps\.googleusercontent\.com', body.client_id):
         raise HTTPException(422, 'Client ID do Google inválido.')
-    old = client_config()
+    old = panel_config() or environment_config()
     secret = body.client_secret or (old.get('client_secret') if old.get('client_id') == body.client_id else None)
     if not secret or any(c.isspace() for c in secret):
         raise HTTPException(422, 'Informe o Client Secret do aplicativo Google.')
@@ -65,6 +74,14 @@ def put_config(body: ClientConfig, user=Depends(admin)):
                      (storage.encrypt({'client_id': body.client_id, 'client_secret': secret}),))
         audit(conn, user, 'google.configure', 'google')
     return {'ok': True}
+
+
+@router.delete('/config', status_code=204)
+def delete_config(user=Depends(admin)):
+    # Existing connections keep working: each one stores the app it was authorized with.
+    with db.connection() as conn:
+        conn.execute("DELETE FROM setapi.integrations WHERE name='google'")
+        audit(conn, user, 'google.remove', 'google')
 
 
 class Connect(BaseModel):
@@ -77,7 +94,7 @@ class Connect(BaseModel):
 def connect(body: Connect, user=Depends(session_manager)):
     config = client_config()
     if not config:
-        raise HTTPException(409, 'Conexão com Google indisponível: defina SETAPI_GOOGLE_CLIENT_ID e SETAPI_GOOGLE_CLIENT_SECRET no servidor.')
+        raise HTTPException(409, 'Conexão com Google indisponível: o administrador da plataforma precisa informar o Client ID e o Client Secret em Configurações.')
     folder = None
     with db.connection() as conn:
         organization = storage.owner(conn, user, body.organization_id)

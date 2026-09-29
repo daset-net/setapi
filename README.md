@@ -97,7 +97,7 @@ A estrutura e as configurações persistem no PostgreSQL. Reserve espaço tempor
 | `SETAPI_WS_MAX` / `SETAPI_HTTP_CONCURRENCY` | Limites por processo, padrão 1000 |
 | `SETAPI_ALLOW_REGISTRATION` | Cadastro público de alunos; desativado por padrão |
 | `SETAPI_SMTP_HOST/PORT/FROM/USER/PASSWORD` | Legado. Prefira configurar o e-mail por API no painel, que tem prioridade sobre estas variáveis |
-| `SETAPI_GOOGLE_CLIENT_ID` / `SETAPI_GOOGLE_CLIENT_SECRET` | Aplicativo OAuth do Google usado pelo botão Conectar Google |
+| `SETAPI_GOOGLE_CLIENT_ID` / `SETAPI_GOOGLE_CLIENT_SECRET` | Opcional: aplicativo OAuth do Google, se não for informado em Configurações no painel |
 | `SETAPI_STORAGE_HOSTS` | Allowlist de hosts HTTPS para S3 compatível, além de AWS/R2 |
 
 `SETAPI_ADMIN_EMAIL` e `SETAPI_ADMIN_PASSWORD` só criam o primeiro administrador, quando o banco está vazio. Alterá-las depois não muda o login. Para aplicar os valores atuais (recuperar o acesso ou trocar e-mail/senha), abra o console do serviço e rode:
@@ -186,7 +186,7 @@ POST /api/tables
 }
 ```
 
-No painel, crie o token em **Usuários**, junto com o usuário (marque *Criar um token de API junto com este usuário*) ou pelo botão **Token** da linha de um usuário já existente. A página **Tokens de acesso** continua disponível para tokens da sua conta global.
+No painel, escolha a organização no seletor da barra lateral e crie o token em **Usuários**, junto com o usuário (marque *Criar um token de API junto com este usuário*) ou pelo botão **Token** da linha de um usuário já existente. Também dá para criar em **Tokens de acesso**, escolhendo o usuário da organização que responde pelo token. Tokens pertencem sempre a uma organização; os tokens antigos da plataforma aparecem em **Configurações** até serem revogados.
 
 Para cada tabela, escolha o acesso: **Somente leitura**, **Somente escrita** (criar, editar e excluir), **Leitura e escrita** ou **Personalizado**, que abre as quatro operações. O seletor *Aplicar a todas…* repete a mesma escolha em todas as tabelas. Os escopos resultantes são os mesmos da API:
 
@@ -279,16 +279,18 @@ A inbox precisa pertencer à chave; o SETAPI confere com o provedor ao salvar. A
 
 ### Google Drive: conectar com Google
 
-No painel, abra **Storage e arquivos → Conectar storage → Google Drive → Conectar Google**. O Google abre na hora: quem não está logado informa e-mail e senha; quem já está logado vai direto para a tela de autorização. Ao voltar, o SETAPI cria uma pasta exclusiva, salva o refresh token criptografado e deixa a conexão disponível para arquivos e backups.
+No painel, escolha a organização no seletor e abra **Storage e arquivos → Conectar storage → Google Drive → Conectar Google** (para os backups da plataforma: **Plataforma → Backups → Conectar destino**). O Google abre na hora: quem não está logado informa e-mail e senha; quem já está logado vai direto para a tela de autorização. Ao voltar, o SETAPI cria uma pasta exclusiva, salva o refresh token criptografado e deixa a conexão disponível para arquivos e backups.
 
-Cada organização conecta o **próprio** Drive: o usuário de painel da organização entra no SETAPI, abre **Storage e arquivos** e clica em Conectar Google com a conta dele. A conexão, a pasta e os arquivos ficam vinculados à organização; as outras não enxergam nem usam. O administrador global vê todas as conexões, com a coluna Organização. Backups do banco vão somente para storage da plataforma (criado pelo administrador global), porque contêm os dados de todas as organizações.
+Cada organização conecta o **próprio** Drive: o usuário de painel da organização entra no SETAPI, abre **Storage e arquivos** e clica em Conectar Google com a conta dele. A conexão, a pasta e os arquivos ficam vinculados à organização; as outras não enxergam nem usam. O administrador global vê as conexões de cada organização ao selecioná-la. Backups do banco vão somente para os destinos da plataforma (página Backups, do administrador global), porque contêm os dados de todas as organizações.
 
-Para o botão funcionar, quem instala o servidor registra o aplicativo Google **uma única vez**, nas variáveis de ambiente:
+Para o botão funcionar, o administrador global registra o aplicativo Google **uma única vez**, em **Plataforma → Configurações → Aplicativo Google**:
 
 1. No Google Cloud, crie um projeto e ative a API Google Drive.
 2. Configure a tela de consentimento OAuth.
 3. Crie credenciais OAuth do tipo **Aplicativo da Web** com a URI de redirecionamento `https://SEU_DOMINIO/api/integrations/google/callback`.
-4. Defina `SETAPI_GOOGLE_CLIENT_ID` e `SETAPI_GOOGLE_CLIENT_SECRET` e reinicie o serviço.
+4. Cole o Client ID e o Client Secret no painel. O Client Secret fica criptografado no banco.
+
+Alternativa: defina `SETAPI_GOOGLE_CLIENT_ID` e `SETAPI_GOOGLE_CLIENT_SECRET` e reinicie o serviço. O que estiver salvo no painel vale no lugar dessas variáveis.
 
 `SETAPI_PUBLIC_URL` precisa corresponder ao domínio HTTPS utilizado. Esse cadastro identifica o SETAPI perante o Google; o repositório não inclui credenciais de um aplicativo Google compartilhado. Consulte a [documentação oficial do OAuth](https://developers.google.com/identity/protocols/oauth2/web-server).
 
