@@ -83,20 +83,20 @@ def protect(conn, table):
     conn.execute("NOTIFY pgrst, 'reload schema'")
 
 
-def jwt(user, table, rule):
+def jwt(user, table, rule, scope=None):
     from .security import is_admin
     now = int(time.time())
     claims = {'role': names()[0], 'aud': 'setapi-internal', 'iat': now, 'exp': now + 30,
               'sub': str(user['id']), 'token_id': str(user['token_id']),
               'tenant': str(user['tenant_id']) if user.get('tenant_id') else None,
-              'root': is_admin(user), 'table': table, 'policy': rule}
+              'root': is_admin(user), 'table': table, 'scope': scope or table, 'policy': rule}
     def encode(value):
         return base64.urlsafe_b64encode(value).rstrip(b'=')
     unsigned = b'.'.join(encode(json.dumps(value, separators=(',', ':'), default=str).encode()) for value in ({'alg': 'HS256', 'typ': 'JWT'}, claims))
     return (unsigned + b'.' + encode(hmac.new(secret('jwt').encode(), unsigned, hashlib.sha256).digest())).decode()
 
 
-def read(user, table, rule, fields, filters, sort, limit, offset, include_total, _retry=0):
+def read(user, table, rule, fields, filters, sort, limit, offset, include_total, _retry=0, scope=None):
     params = [('select', ','.join(fields)), ('order', sort.removeprefix('-') + ('.desc' if sort.startswith('-') else '.asc') + ',id.asc'),
               ('limit', str(limit)), ('offset', str(offset))]
     conditions = []
@@ -121,7 +121,7 @@ def read(user, table, rule, fields, filters, sort, limit, offset, include_total,
         conditions.append(quoted(key) + '.' + operand)
     if conditions:
         params.append(('and', '(' + ','.join(conditions) + ')'))
-    headers = {'Authorization': 'Bearer ' + jwt(user, table, rule)}
+    headers = {'Authorization': 'Bearer ' + jwt(user, table, rule, scope)}
     if include_total:
         headers['Prefer'] = 'count=exact'
     try:
@@ -130,7 +130,7 @@ def read(user, table, rule, fields, filters, sort, limit, offset, include_total,
                 error = response.read()
                 if len(error) < 8192 and json.loads(error).get('code') in ('PGRST204', 'PGRST205'):
                     time.sleep(.15)
-                    return read(user, table, rule, fields, filters, sort, limit, offset, include_total, _retry + 1)
+                    return read(user, table, rule, fields, filters, sort, limit, offset, include_total, _retry + 1, scope)
             if response.status_code == 416:
                 total = response.headers.get('content-range', '').split('/')[-1]
                 if total.isdigit() and offset >= int(total):

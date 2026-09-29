@@ -1,20 +1,28 @@
-from fastapi import APIRouter, Depends, HTTPException
+from uuid import UUID
+from fastapi import APIRouter, Depends, HTTPException, Query
 from psycopg import sql
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 from . import db, tables
-from .security import admin, is_admin, audit
+from .security import admin, builder, is_admin, is_org_admin, audit
 
 router=APIRouter(prefix='/api/tables',tags=['Data access policies'])
 
 
 def policy(conn,table,user):
     if is_admin(user):return None
+    if is_org_admin(user) and tables.own_table(user,table):return None
     cache=user.setdefault('_policies',{})
     if table not in cache:
         cache[table]=conn.execute('SELECT * FROM setapi.policies WHERE table_name=%s',(table,)).fetchone()
     row=cache[table]
-    if user.get('tenant_id') is not None and (not row or not row['tenant_column']):
+    if tables.PREFIXED.match(table):
+        # An organization's own table: only that organization's users, no tenant column needed.
+        if '_prefix' not in user:
+            user['_prefix']=tables.prefix_of(conn,user.get('tenant_id'))
+        if not user['_prefix'] or table[:12]!=user['_prefix']:
+            raise HTTPException(403,'This table belongs to another organization')
+    elif user.get('tenant_id') is not None and (not row or not row['tenant_column']):
         raise HTTPException(403,'Organization users require an organization-scoped table policy')
     if not row and user['role']!='admin':
         raise HTTPException(403,'This table has no access policy for members')
@@ -74,16 +82,22 @@ class Policy(BaseModel):
     write_fields:list[str]=Field(default_factory=list,max_length=128)
 
 
+ORG=Query(None,description='Organization whose tables to use; omit for the platform.')
+
+
 @router.get('/{table}/policy')
-def get_policy(table:str,user=Depends(admin)):
+def get_policy(table:str,organization_id:UUID|None=ORG,user=Depends(builder)):
     with db.connection() as conn:
-        tables.exists(conn,table)
-        return conn.execute('SELECT * FROM setapi.policies WHERE table_name=%s',(table,)).fetchone() or {'owner_column':None,'tenant_column':None,'read_fields':[],'write_fields':[]}
+        physical=tables.target(conn,user,table,organization_id,structure=True)
+        row=conn.execute('SELECT * FROM setapi.policies WHERE table_name=%s',(physical,)).fetchone()
+        return dict(row,table_name=table) if row else {'table_name':table,'owner_column':None,'tenant_column':None,'read_fields':[],'write_fields':[]}
 
 
 @router.put('/{table}/policy')
-def put_policy(table:str,body:Policy,user=Depends(admin)):
+def put_policy(table:str,body:Policy,organization_id:UUID|None=ORG,user=Depends(builder)):
     with db.connection() as conn:
+        public=table
+        table=tables.target(conn,user,table,organization_id,structure=True)
         cols={c['name']:c for c in tables.columns(conn,table)}
         for column in (body.owner_column,body.tenant_column):
             if column and (column not in cols or cols[column]['type']!='uuid' or column in tables.RESERVED):
@@ -101,8 +115,36 @@ def put_policy(table:str,body:Policy,user=Depends(admin)):
                 conn.execute(sql.SQL('CREATE INDEX IF NOT EXISTS {} ON data.{} ({},created_at,id)').format(sql.Identifier(name),sql.Identifier(table),sql.Identifier(col)))
         from . import postgrest
         postgrest.protect(conn, table)
-        audit(conn,user,'policy.update',table)
+        audit(conn,user,'policy.update',public,{'organization_id':str(organization_id) if organization_id else None})
     return {'ok':True}
+
+
+def guard_column(conn,table,column,new_name=None):
+    """Before renaming, retyping or deleting a field. Organization tables follow the change in their policy;
+    other tables keep requiring a policy update first."""
+    if not tables.PREFIXED.match(table):
+        return protect_column(conn,table,column)
+    row=conn.execute('SELECT * FROM setapi.policies WHERE table_name=%s',(table,)).fetchone()
+    if row and column in (row['owner_column'],row['tenant_column']):
+        raise HTTPException(409,'Update the access policy before modifying this column')
+
+
+def follow_column(conn,table,old,new):
+    """Keep an organization table's policy in step with an added, renamed or deleted field."""
+    if not tables.PREFIXED.match(table):
+        return
+    row=conn.execute('SELECT * FROM setapi.policies WHERE table_name=%s FOR UPDATE',(table,)).fetchone()
+    if not row:
+        return
+    def moved(fields,add):
+        fields=[new if f==old else f for f in fields if not (f==old and new is None)]
+        if old is None and add and new not in fields:
+            fields.append(new)
+        return fields
+    conn.execute('UPDATE setapi.policies SET read_fields=%s,write_fields=%s WHERE table_name=%s',
+                 (Jsonb(moved(row['read_fields'],True)),Jsonb(moved(row['write_fields'],True)),table))
+    from . import postgrest
+    postgrest.protect(conn,table)
 
 
 def protect_column(conn,table,column):
@@ -152,7 +194,7 @@ def check_references(conn,table,user,body):
        WHERE k.contype='f' AND n.nspname='data' AND c.relname=%s""",(table,)).fetchall()
     for ref in refs:
         if ref['field'] not in body or body[ref['field']] is None:continue
-        if ref['schema']!='data' or ref['count']!=1 or not allowed(user,ref['target'],'read'):
+        if ref['schema']!='data' or ref['count']!=1 or not allowed(user,tables.logical(ref['target']),'read',ref['target']):
             raise HTTPException(403,'Referenced record is not accessible')
         scope,params=constraint(conn,ref['target'],user)
         row=conn.execute(sql.SQL('SELECT 1 FROM data.{} WHERE {}=%s AND {}').format(sql.Identifier(ref['target']),sql.Identifier(ref['target_field']),scope),[body[ref['field']]]+params).fetchone()

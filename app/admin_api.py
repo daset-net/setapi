@@ -8,7 +8,7 @@ from argon2.exceptions import VerificationError
 from . import db, tables, policies
 from .organizations import require_active
 from .config import settings
-from .security import admin, principal, is_admin, allowed, audit, issue, validate_scopes, passwords, DUMMY_HASH, verify_password, hash_password, rate_limit
+from .security import admin, builder, is_org_admin, principal, is_admin, allowed, audit, issue, validate_scopes, passwords, DUMMY_HASH, verify_password, hash_password, rate_limit
 
 router = APIRouter(prefix='/api', tags=['Administration'])
 
@@ -30,7 +30,7 @@ def login(body: Login, request: Request, response: Response):
 
 @router.get('/auth/me')
 def me(user=Depends(principal)):
-    return {'id': user['id'], 'email': user['email'], 'admin': is_admin(user), 'scopes': user['scopes'], 'mfa_enabled':user['mfa_enabled'], 'audience':user['audience'], 'organization_id':user['tenant_id']}
+    return {'id': user['id'], 'email': user['email'], 'admin': is_admin(user), 'org_admin': is_org_admin(user), 'scopes': user['scopes'], 'mfa_enabled':user['mfa_enabled'], 'audience':user['audience'], 'organization_id':user['tenant_id']}
 
 
 @router.post('/auth/logout', status_code=204)
@@ -52,59 +52,95 @@ def status(user=Depends(admin)):
     return {'read_engine': 'postgrest' if postgrest.enabled() else 'native', 'postgres': version, 'redis': db.cache.ping(), 'worker_alive': bool(db.cache.get('setapi:worker:heartbeat')), 'db_pool':db.pool.get_stats(), **counts}
 
 
+ORG = Query(None, description='Organization whose tables to use; omit for the platform. Organization users always work in their own.')
+
+
+def scope_cleanup(conn, physical, name):
+    """A reused table name must not silently inherit an old token's access."""
+    if tables.PREFIXED.match(physical):
+        owners = "SELECT u.id FROM setapi.users u JOIN setapi.organizations o ON o.id=u.tenant_id WHERE o.table_prefix=%s"
+        params = (name, physical[:12])
+    else:
+        # Platform tables: everyone except organizations that have their own table with this name.
+        owners = """SELECT u.id FROM setapi.users u LEFT JOIN setapi.organizations o ON o.id=u.tenant_id
+          WHERE o.id IS NULL OR to_regclass('data.'||quote_ident(o.table_prefix||%s)) IS NULL"""
+        params = (name, name)
+    conn.execute('UPDATE setapi.tokens SET scopes=scopes-%s WHERE user_id IN (' + owners + ')', params)
+    conn.execute('UPDATE setapi.users SET scopes=scopes-%s WHERE id IN (' + owners + ')', params)
+
+
 @router.get('/tables')
-def list_tables(user=Depends(principal)):
+def list_tables(organization_id: UUID | None = ORG, user=Depends(principal)):
     with db.connection() as conn:
+        organization = tables.context(conn, user, organization_id)
+        prefix = tables.prefix_of(conn, organization)
         rows = conn.execute("SELECT table_name AS name FROM information_schema.tables WHERE table_schema='data' AND table_type='BASE TABLE' ORDER BY table_name").fetchall()
+        stored = [r['name'] for r in rows]
+        chosen = [n for n in stored if n.startswith(prefix)] if prefix else [n for n in stored if not tables.PREFIXED.match(n)]
+        if prefix and not is_admin(user):
+            # Organization users also see platform tables shared by organization, unless their own has the name.
+            own = {tables.logical(n) for n in chosen}
+            chosen += [n for n in stored if not tables.PREFIXED.match(n) and n not in own]
         result=[]
-        for r in rows:
-            if not allowed(user,r['name'],'read'):continue
+        for physical in chosen:
+            name = tables.logical(physical)
+            if not allowed(user,name,'read',physical):continue
             try:
-                readable=policies.fields(conn,r['name'],user,'read')
+                readable=policies.fields(conn,physical,user,'read')
             except HTTPException as exc:
                 if exc.status_code==403:continue
                 raise
-            writable=policies.fields(conn,r['name'],user,'write')
-            result.append(dict(r,columns=[dict(c,default_value=None,writable=c['name'] in writable and c['name'] not in tables.RESERVED) for c in tables.columns(conn,r['name']) if c['name'] in readable]))
-        return {'data':result}
+            writable=policies.fields(conn,physical,user,'write')
+            result.append({'name': name, 'organization_id': organization if physical != name else None,
+                           'columns': [dict(c,default_value=None,writable=c['name'] in writable and c['name'] not in tables.RESERVED) for c in tables.columns(conn,physical) if c['name'] in readable]})
+        return {'data':sorted(result, key=lambda t: t['name'])}
 
 
 @router.post('/tables', status_code=201)
-def create_table(body: tables.Table, user=Depends(admin)):
-    """Create a table with id, created_at, updated_at and the given fields. Its records are served at /api/data/{name}."""
+def create_table(body: tables.Table, organization_id: UUID | None = ORG, user=Depends(builder)):
+    """Create a table with id, created_at, updated_at and the given fields. Its records are served at /api/data/{name}. With organization_id the table belongs to that organization."""
     tables.identifier(body.name)
     if len({c.name for c in body.columns}) != len(body.columns):
         raise HTTPException(422, 'Duplicate columns')
-    definitions = [sql.SQL('id uuid PRIMARY KEY DEFAULT gen_random_uuid()'),
-                   sql.SQL('created_at timestamptz NOT NULL DEFAULT now()'),
-                   sql.SQL('updated_at timestamptz NOT NULL DEFAULT now()')]
-    if body.organization_isolated:
-        if any(c.name=='organization_id' for c in body.columns):raise HTTPException(422,'organization_id is created automatically')
-        definitions.append(sql.SQL('organization_id uuid REFERENCES setapi.organizations(id) ON DELETE RESTRICT'))
-    definitions.extend(tables.column_sql(c) for c in body.columns)
     with db.connection() as conn:
-        conn.execute(sql.SQL('CREATE TABLE data.{} ({})').format(sql.Identifier(body.name), sql.SQL(',').join(definitions)))
+        organization = tables.context(conn, user, organization_id)
+        prefix = tables.prefix_of(conn, organization)
+        if organization and body.organization_isolated:
+            raise HTTPException(422, 'An organization table already belongs only to that organization; leave organization_isolated false')
+        physical = tables.target(conn, user, body.name, organization_id, new=True)
+        definitions = [sql.SQL('id uuid PRIMARY KEY DEFAULT gen_random_uuid()'),
+                       sql.SQL('created_at timestamptz NOT NULL DEFAULT now()'),
+                       sql.SQL('updated_at timestamptz NOT NULL DEFAULT now()')]
         if body.organization_isolated:
-            readable=['id','created_at','updated_at']+[c.name for c in body.columns]
-            writable=[c.name for c in body.columns]
-            conn.execute("INSERT INTO setapi.policies VALUES(%s,NULL,'organization_id',%s,%s)",(body.name,Jsonb(readable),Jsonb(writable)))
-            index='so_'+__import__('hashlib').sha256(body.name.encode()).hexdigest()[:20]
-            conn.execute(sql.SQL('CREATE INDEX {} ON data.{} (organization_id,created_at,id)').format(sql.Identifier(index),sql.Identifier(body.name)))
-        tables.manage(conn,body.name)
-        audit(conn, user, 'table.create', body.name, body.model_dump())
-        tables.event(conn, body.name, 'schema', body.name)
-    return {'name': body.name, 'endpoint': '/api/data/' + body.name}
+            if any(c.name=='organization_id' for c in body.columns):raise HTTPException(422,'organization_id is created automatically')
+            definitions.append(sql.SQL('organization_id uuid REFERENCES setapi.organizations(id) ON DELETE RESTRICT'))
+        definitions.extend(tables.column_sql(c, conn, prefix) for c in body.columns)
+        conn.execute(sql.SQL('CREATE TABLE data.{} ({})').format(sql.Identifier(physical), sql.SQL(',').join(definitions)))
+        readable=['id','created_at','updated_at']+[c.name for c in body.columns]
+        writable=[c.name for c in body.columns]
+        if body.organization_isolated:
+            conn.execute("INSERT INTO setapi.policies VALUES(%s,NULL,'organization_id',%s,%s)",(physical,Jsonb(readable),Jsonb(writable)))
+            index='so_'+__import__('hashlib').sha256(physical.encode()).hexdigest()[:20]
+            conn.execute(sql.SQL('CREATE INDEX {} ON data.{} (organization_id,created_at,id)').format(sql.Identifier(index),sql.Identifier(physical)))
+        elif organization:
+            # The organization's panel users get every field by default; restrict it in the table policy.
+            conn.execute('INSERT INTO setapi.policies VALUES(%s,NULL,NULL,%s,%s)',(physical,Jsonb(readable),Jsonb(writable)))
+        tables.manage(conn,physical)
+        audit(conn, user, 'table.create', body.name, dict(body.model_dump(), organization_id=str(organization) if organization else None))
+        tables.event(conn, physical, 'schema', physical)
+    return {'name': body.name, 'endpoint': '/api/data/' + body.name, 'organization_id': organization}
 
 
 @router.post('/tables/{table}/columns', status_code=201)
-def add_column(table: str, body: tables.Column, user=Depends(admin)):
+def add_column(table: str, body: tables.Column, organization_id: UUID | None = ORG, user=Depends(builder)):
     """Add a field to an existing table."""
-    definition = tables.column_sql(body)
     with db.connection() as conn:
-        tables.exists(conn, table)
-        conn.execute(sql.SQL('ALTER TABLE data.{} ADD COLUMN {}').format(sql.Identifier(table), definition))
-        audit(conn, user, 'column.create', table, body.model_dump())
-        tables.event(conn, table, 'schema', table)
+        physical = tables.target(conn, user, table, organization_id, structure=True)
+        definition = tables.column_sql(body, conn, physical[:12] if physical != table else '')
+        conn.execute(sql.SQL('ALTER TABLE data.{} ADD COLUMN {}').format(sql.Identifier(physical), definition))
+        policies.follow_column(conn, physical, None, body.name)
+        audit(conn, user, 'column.create', table, dict(body.model_dump(), organization_id=str(organization_id) if organization_id else None))
+        tables.event(conn, physical, 'schema', physical)
     return {'ok': True}
 
 
@@ -113,48 +149,48 @@ class Rename(BaseModel):
 
 
 @router.patch('/tables/{table}/columns/{column}')
-def rename_column(table: str, column: str, body: Rename, user=Depends(admin)):
+def rename_column(table: str, column: str, body: Rename, organization_id: UUID | None = ORG, user=Depends(builder)):
     """Rename a field. Its data is kept."""
     tables.identifier(column)
     tables.identifier(body.name)
     if column in tables.RESERVED or body.name in tables.RESERVED:
         raise HTTPException(422, 'System columns cannot be renamed')
     with db.connection() as conn:
-        tables.exists(conn, table)
-        policies.protect_column(conn,table,column)
-        conn.execute(sql.SQL('ALTER TABLE data.{} RENAME COLUMN {} TO {}').format(sql.Identifier(table), sql.Identifier(column), sql.Identifier(body.name)))
-        audit(conn, user, 'column.rename', table, {'old': column, 'new': body.name})
-        tables.event(conn, table, 'schema', table)
+        physical = tables.target(conn, user, table, organization_id, structure=True)
+        policies.guard_column(conn, physical, column, body.name)
+        conn.execute(sql.SQL('ALTER TABLE data.{} RENAME COLUMN {} TO {}').format(sql.Identifier(physical), sql.Identifier(column), sql.Identifier(body.name)))
+        policies.follow_column(conn, physical, column, body.name)
+        audit(conn, user, 'column.rename', table, {'old': column, 'new': body.name, 'organization_id': str(organization_id) if organization_id else None})
+        tables.event(conn, physical, 'schema', physical)
     return {'ok': True}
 
 
 @router.delete('/tables/{table}/columns/{column}', status_code=204)
-def drop_column(table: str, column: str, confirm: str = Query(description='Must be exactly "table.column", to confirm.'), user=Depends(admin)):
+def drop_column(table: str, column: str, confirm: str = Query(description='Must be exactly "table.column", to confirm.'), organization_id: UUID | None = ORG, user=Depends(builder)):
     """Delete a field and its data. System fields cannot be deleted."""
     tables.identifier(column)
     if column in tables.RESERVED or confirm != f'{table}.{column}':
         raise HTTPException(422, 'Confirm the exact table.column; system columns cannot be deleted')
     with db.connection() as conn:
-        tables.exists(conn, table)
-        policies.protect_column(conn,table,column)
-        conn.execute(sql.SQL('ALTER TABLE data.{} DROP COLUMN {} RESTRICT').format(sql.Identifier(table), sql.Identifier(column)))
-        audit(conn, user, 'column.delete', table, {'column': column})
-        tables.event(conn, table, 'schema', table)
+        physical = tables.target(conn, user, table, organization_id, structure=True)
+        policies.guard_column(conn, physical, column)
+        conn.execute(sql.SQL('ALTER TABLE data.{} DROP COLUMN {} RESTRICT').format(sql.Identifier(physical), sql.Identifier(column)))
+        policies.follow_column(conn, physical, column, None)
+        audit(conn, user, 'column.delete', table, {'column': column, 'organization_id': str(organization_id) if organization_id else None})
+        tables.event(conn, physical, 'schema', physical)
 
 
 @router.delete('/tables/{table}', status_code=204)
-def drop_table(table: str, confirm: str = Query(description='Must be exactly the table name, to confirm.'), user=Depends(admin)):
+def drop_table(table: str, confirm: str = Query(description='Must be exactly the table name, to confirm.'), organization_id: UUID | None = ORG, user=Depends(builder)):
     """Delete a table and all its records. Fails while other tables reference it."""
     if confirm != table:
         raise HTTPException(422, 'Confirm the exact table name')
     with db.connection() as conn:
-        tables.exists(conn, table)
-        conn.execute(sql.SQL('DROP TABLE data.{} RESTRICT').format(sql.Identifier(table)))
-        # A reused table name must not silently inherit an old token's access.
-        conn.execute('DELETE FROM setapi.policies WHERE table_name=%s',(table,))
-        conn.execute('UPDATE setapi.tokens SET scopes=scopes-%s', (table,))
-        conn.execute('UPDATE setapi.users SET scopes=scopes-%s', (table,))
-        audit(conn, user, 'table.delete', table)
+        physical = tables.target(conn, user, table, organization_id, structure=True)
+        conn.execute(sql.SQL('DROP TABLE data.{} RESTRICT').format(sql.Identifier(physical)))
+        conn.execute('DELETE FROM setapi.policies WHERE table_name=%s',(physical,))
+        scope_cleanup(conn, physical, table)
+        audit(conn, user, 'table.delete', table, {'organization_id': str(organization_id) if organization_id else None})
 
 
 class UserCreate(BaseModel):
@@ -164,12 +200,13 @@ class UserCreate(BaseModel):
     scopes: dict[str, list[str]] = Field(default_factory=dict)
     audience: str = 'panel'
     tenant_id: UUID | None = None
+    org_admin: bool = Field(False, description='Administrator of its organization: manages the structure of that organization tables. Requires tenant_id and the panel audience.')
 
 
 @router.get('/users')
 def users(user=Depends(admin)):
     with db.connection() as conn:
-        return {'data': conn.execute('SELECT id,email,role,active,scopes,audience,tenant_id,(mfa_secret IS NOT NULL) AS mfa_enabled,created_at FROM setapi.users ORDER BY created_at').fetchall()}
+        return {'data': conn.execute('SELECT id,email,role,active,scopes,audience,tenant_id,org_admin,(mfa_secret IS NOT NULL) AS mfa_enabled,created_at FROM setapi.users ORDER BY created_at').fetchall()}
 
 
 @router.post('/users', status_code=201)
@@ -181,12 +218,14 @@ def create_user(body: UserCreate, user=Depends(admin)):
         raise HTTPException(422,'Global administrators cannot be organization members')
     if body.audience not in ('panel','app') or (body.audience == 'app' and body.role != 'member'):
         raise HTTPException(422, 'App users must be members')
+    if body.org_admin and (body.tenant_id is None or body.audience != 'panel'):
+        raise HTTPException(422, 'Organization administrators need an organization and panel access')
     validate_scopes(body.scopes)
     encoded = hash_password(body.password)
     with db.connection() as conn:
         require_active(conn,body.tenant_id)
-        row = conn.execute('INSERT INTO setapi.users(email,password_hash,role,scopes,audience,tenant_id) VALUES(%s,%s,%s,%s,%s,%s) RETURNING id,email,role',
-            (body.email.lower(), encoded, body.role, Jsonb(body.scopes), body.audience, body.tenant_id)).fetchone()
+        row = conn.execute('INSERT INTO setapi.users(email,password_hash,role,scopes,audience,tenant_id,org_admin) VALUES(%s,%s,%s,%s,%s,%s,%s) RETURNING id,email,role,org_admin',
+            (body.email.lower(), encoded, body.role, Jsonb(body.scopes), body.audience, body.tenant_id, body.org_admin)).fetchone()
         audit(conn, user, 'user.create', str(row['id']))
     return row
 
@@ -229,11 +268,13 @@ def create_token(body: TokenCreate, response: Response, user=Depends(admin)):
     validate_scopes(body.scopes)
     with db.connection() as conn:
         owner_id=body.user_id or user['id']
-        owner=conn.execute('SELECT id,role,active,tenant_id,scopes FROM setapi.users WHERE id=%s',(owner_id,)).fetchone()
+        owner=conn.execute('SELECT id,role,active,tenant_id,scopes,org_admin FROM setapi.users WHERE id=%s',(owner_id,)).fetchone()
         if not owner or not owner['active']:raise HTTPException(422,'Choose an active token owner')
         require_active(conn,owner['tenant_id'])
-        if body.admin and (owner['role']!='admin' or owner['tenant_id'] is not None):
-            raise HTTPException(422,'Organization tokens cannot have global administrative access')
+        # An administrative token acts as its owner: globally for the global administrator,
+        # inside the organization for an organization administrator.
+        if body.admin and not (owner['role']=='admin' and owner['tenant_id'] is None) and not owner['org_admin']:
+            raise HTTPException(422,'Only administrators can own administrative tokens')
         if owner['role']!='admin' and any(not set(actions)<=set(owner['scopes'].get(table,[])) for table,actions in body.scopes.items()):
             raise HTTPException(422,'Token permissions must be within the owner permissions')
         result = issue(conn, owner_id, body.name, scopes=body.scopes, admin=body.admin, hours=body.hours)
@@ -250,9 +291,12 @@ def revoke_token(token_id: UUID, user=Depends(admin)):
 
 
 @router.get('/audit')
-def audit_log(user=Depends(admin)):
+def audit_log(organization_id: UUID | None = Query(None, description='Only activity of this organization: its users, and changes to its tables and storage.'), user=Depends(admin)):
     with db.connection() as conn:
-        return {'data': conn.execute('SELECT * FROM setapi.audit ORDER BY id DESC LIMIT 100').fetchall()}
+        if organization_id is None:
+            return {'data': conn.execute('SELECT * FROM setapi.audit ORDER BY id DESC LIMIT 100').fetchall()}
+        return {'data': conn.execute("""SELECT a.* FROM setapi.audit a WHERE a.user_id IN (SELECT id FROM setapi.users WHERE tenant_id=%s)
+          OR a.details->>'organization_id'=%s ORDER BY a.id DESC LIMIT 100""", (organization_id, str(organization_id))).fetchall()}
 
 
 class IndexCreate(BaseModel):
@@ -261,31 +305,33 @@ class IndexCreate(BaseModel):
 
 
 @router.get('/tables/{table}/indexes')
-def indexes(table:str,user=Depends(admin)):
+def indexes(table:str,organization_id: UUID | None = ORG,user=Depends(builder)):
     with db.connection() as conn:
-        tables.exists(conn,table)
-        return {'data':conn.execute("SELECT indexname,indexdef FROM pg_indexes WHERE schemaname='data' AND tablename=%s",(table,)).fetchall()}
+        physical=tables.target(conn,user,table,organization_id,structure=True)
+        return {'data':conn.execute("SELECT indexname,indexdef FROM pg_indexes WHERE schemaname='data' AND tablename=%s",(physical,)).fetchall()}
 
 
 @router.post('/tables/{table}/indexes',status_code=201)
-def add_index(table:str,body:IndexCreate,user=Depends(admin)):
+def add_index(table:str,body:IndexCreate,organization_id: UUID | None = ORG,user=Depends(builder)):
     import hashlib
     with db.connection() as conn:
-        cols={c['name'] for c in tables.columns(conn,table)}
+        physical=tables.target(conn,user,table,organization_id,structure=True)
+        cols={c['name'] for c in tables.columns(conn,physical)}
         if not set(body.columns)<=cols or len(set(body.columns))!=len(body.columns):raise HTTPException(422,'Unknown or duplicate field')
-        name='si_'+hashlib.sha256((table+str(body.columns)+str(body.unique)).encode()).hexdigest()[:20]
-        conn.execute(sql.SQL('CREATE {} INDEX IF NOT EXISTS {} ON data.{} ({})').format(sql.SQL('UNIQUE' if body.unique else ''),sql.Identifier(name),sql.Identifier(table),sql.SQL(',').join(map(sql.Identifier,body.columns))))
-        audit(conn,user,'index.create',table)
+        name='si_'+hashlib.sha256((physical+str(body.columns)+str(body.unique)).encode()).hexdigest()[:20]
+        conn.execute(sql.SQL('CREATE {} INDEX IF NOT EXISTS {} ON data.{} ({})').format(sql.SQL('UNIQUE' if body.unique else ''),sql.Identifier(name),sql.Identifier(physical),sql.SQL(',').join(map(sql.Identifier,body.columns))))
+        audit(conn,user,'index.create',table,{'organization_id':str(organization_id) if organization_id else None})
     return {'name':name}
 
 
 @router.delete('/tables/{table}/indexes/{index}',status_code=204)
-def drop_index(table:str,index:str,user=Depends(admin)):
+def drop_index(table:str,index:str,organization_id: UUID | None = ORG,user=Depends(builder)):
     with db.connection() as conn:
-        if not index.startswith('si_') or not conn.execute("SELECT 1 FROM pg_indexes WHERE schemaname='data' AND tablename=%s AND indexname=%s",(table,index)).fetchone():
+        physical=tables.target(conn,user,table,organization_id,structure=True)
+        if not index.startswith('si_') or not conn.execute("SELECT 1 FROM pg_indexes WHERE schemaname='data' AND tablename=%s AND indexname=%s",(physical,index)).fetchone():
             raise HTTPException(422,'Only user-created SETAPI indexes can be removed')
         conn.execute(sql.SQL('DROP INDEX data.{}').format(sql.Identifier(index)))
-        audit(conn,user,'index.delete',table)
+        audit(conn,user,'index.delete',table,{'organization_id':str(organization_id) if organization_id else None})
 
 
 class ColumnEdit(BaseModel):
@@ -295,16 +341,17 @@ class ColumnEdit(BaseModel):
 
 
 @router.put('/tables/{table}/columns/{column}')
-def edit_column(table:str,column:str,body:ColumnEdit,user=Depends(admin)):
+def edit_column(table:str,column:str,body:ColumnEdit,organization_id: UUID | None = ORG,user=Depends(builder)):
     """Change a field's type and whether it is required."""
     if column in tables.RESERVED or body.type not in tables.TYPES or body.confirm!=table+'.'+column:
         raise HTTPException(422,'Confirm the exact table.column and a supported type')
     with db.connection() as conn:
-        cols={c['name'] for c in tables.columns(conn,table)}
+        physical=tables.target(conn,user,table,organization_id,structure=True)
+        cols={c['name'] for c in tables.columns(conn,physical)}
         if column not in cols:raise HTTPException(404,'Field not found')
-        policies.protect_column(conn,table,column)
-        conn.execute(sql.SQL('ALTER TABLE data.{} ALTER COLUMN {} TYPE {} USING {}::{}, ALTER COLUMN {} {} NOT NULL').format(sql.Identifier(table),sql.Identifier(column),sql.SQL(tables.TYPES[body.type]),sql.Identifier(column),sql.SQL(tables.TYPES[body.type]),sql.Identifier(column),sql.SQL('DROP' if body.nullable else 'SET')))
-        audit(conn,user,'column.type',table,{'column':column,'type':body.type})
+        policies.guard_column(conn,physical,column,column)
+        conn.execute(sql.SQL('ALTER TABLE data.{} ALTER COLUMN {} TYPE {} USING {}::{}, ALTER COLUMN {} {} NOT NULL').format(sql.Identifier(physical),sql.Identifier(column),sql.SQL(tables.TYPES[body.type]),sql.Identifier(column),sql.SQL(tables.TYPES[body.type]),sql.Identifier(column),sql.SQL('DROP' if body.nullable else 'SET')))
+        audit(conn,user,'column.type',table,{'column':column,'type':body.type,'organization_id':str(organization_id) if organization_id else None})
     return {'ok':True}
 
 
@@ -313,20 +360,20 @@ class Adopt(BaseModel):
 
 
 @router.post('/tables/{table}/adopt')
-def adopt_table(table:str,body:Adopt,user=Depends(admin)):
+def adopt_table(table:str,body:Adopt,organization_id: UUID | None = ORG,user=Depends(builder)):
     if body.confirm!=table:raise HTTPException(422,'Confirm the exact table name')
     with db.connection() as conn:
-        tables.exists(conn,table)
-        cols={c['name']:c['type'] for c in tables.columns(conn,table)}
+        physical=tables.target(conn,user,table,organization_id,structure=True)
+        cols={c['name']:c['type'] for c in tables.columns(conn,physical)}
         if 'id' in cols and cols['id']!='uuid':raise HTTPException(422,'Existing id must be UUID; migrate its relationships before adoption')
         if 'id' not in cols:
-            conn.execute(sql.SQL('ALTER TABLE data.{} ADD COLUMN id uuid NOT NULL DEFAULT gen_random_uuid() UNIQUE').format(sql.Identifier(table)))
+            conn.execute(sql.SQL('ALTER TABLE data.{} ADD COLUMN id uuid NOT NULL DEFAULT gen_random_uuid() UNIQUE').format(sql.Identifier(physical)))
         for col in ('created_at','updated_at'):
             if col not in cols:
-                conn.execute(sql.SQL('ALTER TABLE data.{} ADD COLUMN {} timestamptz NOT NULL DEFAULT now()').format(sql.Identifier(table),sql.Identifier(col)))
-        conn.execute(sql.SQL('ALTER TABLE data.{} ALTER COLUMN id SET NOT NULL').format(sql.Identifier(table)))
-        unique_name='su_'+__import__('hashlib').sha256(table.encode()).hexdigest()[:20]
-        conn.execute(sql.SQL('CREATE UNIQUE INDEX IF NOT EXISTS {} ON data.{} (id)').format(sql.Identifier(unique_name),sql.Identifier(table)))
-        tables.manage(conn,table)
-        audit(conn,user,'table.adopt',table)
+                conn.execute(sql.SQL('ALTER TABLE data.{} ADD COLUMN {} timestamptz NOT NULL DEFAULT now()').format(sql.Identifier(physical),sql.Identifier(col)))
+        conn.execute(sql.SQL('ALTER TABLE data.{} ALTER COLUMN id SET NOT NULL').format(sql.Identifier(physical)))
+        unique_name='su_'+__import__('hashlib').sha256(physical.encode()).hexdigest()[:20]
+        conn.execute(sql.SQL('CREATE UNIQUE INDEX IF NOT EXISTS {} ON data.{} (id)').format(sql.Identifier(unique_name),sql.Identifier(physical)))
+        tables.manage(conn,physical)
+        audit(conn,user,'table.adopt',table,{'organization_id':str(organization_id) if organization_id else None})
     return {'ok':True}

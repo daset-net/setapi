@@ -105,3 +105,21 @@ END $$;
 ALTER TABLE setapi.storages ADD COLUMN IF NOT EXISTS organization_id uuid REFERENCES setapi.organizations(id) ON DELETE RESTRICT;
 ALTER TABLE setapi.storages DROP CONSTRAINT IF EXISTS storages_name_key;
 CREATE UNIQUE INDEX IF NOT EXISTS storages_scope_name_idx ON setapi.storages(COALESCE(organization_id,'00000000-0000-0000-0000-000000000000'::uuid),name);
+-- Each organization owns tables stored as <table_prefix><name>; existing organizations get one now.
+ALTER TABLE setapi.organizations ADD COLUMN IF NOT EXISTS table_prefix text;
+UPDATE setapi.organizations SET table_prefix='o'||substr(md5(id::text||clock_timestamp()::text||random()::text),1,10)||'_' WHERE table_prefix IS NULL;
+ALTER TABLE setapi.organizations ALTER COLUMN table_prefix SET DEFAULT 'o'||substr(md5(gen_random_uuid()::text),1,10)||'_';
+ALTER TABLE setapi.organizations ALTER COLUMN table_prefix SET NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS organizations_table_prefix_idx ON setapi.organizations(table_prefix);
+DO $$ BEGIN
+ IF NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conname='organizations_table_prefix_format') THEN
+  ALTER TABLE setapi.organizations ADD CONSTRAINT organizations_table_prefix_format CHECK(table_prefix ~ '^o[0-9a-f]{10}_$');
+ END IF;
+END $$;
+-- Organization administrators manage the structure of their own organization's tables.
+ALTER TABLE setapi.users ADD COLUMN IF NOT EXISTS org_admin boolean NOT NULL DEFAULT false;
+DO $$ BEGIN
+ IF NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conname='users_org_admin_needs_organization') THEN
+  ALTER TABLE setapi.users ADD CONSTRAINT users_org_admin_needs_organization CHECK(NOT org_admin OR (tenant_id IS NOT NULL AND audience='panel'));
+ END IF;
+END $$;

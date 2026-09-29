@@ -71,7 +71,7 @@ def login_user(body, request, audience):
         if current['tenant_id'] is not None and not conn.execute('SELECT 1 FROM setapi.organizations WHERE id=%s AND active',(current['tenant_id'],)).fetchone():
             raise HTTPException(401,'Invalid credentials or organization unavailable')
         verify_otp(conn,current,body.otp)
-        token=issue(conn,user['id'],'App session' if audience=='app' else 'Panel session','session',current['scopes'],audience=='panel' and current['role']=='admin',12)
+        token=issue(conn,user['id'],'App session' if audience=='app' else 'Panel session','session',current['scopes'],audience=='panel' and (current['role']=='admin' or current['org_admin']),12)
         audit(conn,user,'auth.login',audience)
     return current,token
 
@@ -270,6 +270,7 @@ def verify_email(body:ActionToken,request:Request):
 class Access(BaseModel):
     scopes:dict[str,list[str]]=Field(default_factory=dict)
     tenant_id:UUID|None=None
+    org_admin:bool=Field(False,description='Administrator of its organization; requires tenant_id and panel access.')
 
 
 @router.put('/users/{user_id}/access')
@@ -277,10 +278,12 @@ def access(user_id:UUID,body:Access,user=Depends(admin)):
     validate_scopes(body.scopes)
     with db.connection() as conn:
         require_active(conn,body.tenant_id)
-        existing=conn.execute('SELECT role FROM setapi.users WHERE id=%s',(user_id,)).fetchone()
+        existing=conn.execute('SELECT role,audience FROM setapi.users WHERE id=%s',(user_id,)).fetchone()
         if existing and existing['role']=='admin' and body.tenant_id is not None:
             raise HTTPException(422,'Global administrators cannot be organization members')
-        row=conn.execute('UPDATE setapi.users SET scopes=%s,tenant_id=%s WHERE id=%s RETURNING id',(Jsonb(body.scopes),body.tenant_id,user_id)).fetchone()
+        if body.org_admin and (body.tenant_id is None or (existing and existing['audience']!='panel')):
+            raise HTTPException(422,'Organization administrators need an organization and panel access')
+        row=conn.execute('UPDATE setapi.users SET scopes=%s,tenant_id=%s,org_admin=%s WHERE id=%s RETURNING id',(Jsonb(body.scopes),body.tenant_id,body.org_admin,user_id)).fetchone()
         if not row:raise HTTPException(404,'User not found')
         conn.execute('UPDATE setapi.tokens SET revoked_at=now() WHERE user_id=%s',(user_id,))
         audit(conn,user,'user.access',str(user_id))

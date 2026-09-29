@@ -136,19 +136,25 @@ Consulte [segurança e configuração](docs/SECURITY.md) e [testes de carga](doc
 - Backups manuais e periódicos, criptografia autenticada em blocos, SHA-256 e retenção por agendamento.
 - Restauração offline para banco vazio e histórico de operações sem segredos.
 
-## Organizações isoladas
+## Organizações
 
-No painel, use **Organizações → Nova organização**. Em **Usuários**, escolha a organização de cada conta. Ao criar uma tabela, mantenha **Isolar dados por organização** marcado: o SETAPI cria o campo, o índice e a política necessários. Depois libere os campos e operações que os membros poderão usar.
+Cada organização é um espaço de trabalho próprio, como no NocoDB. No painel, o seletor no topo da barra lateral troca entre **Plataforma** e as organizações; em **Organizações**, o botão **Abrir →** faz o mesmo. Dentro de uma organização, Tabelas, Usuários, Tokens, Storage e Atividade mostram e criam só o que é dela. Organizações, Backups e E-mail ficam em Plataforma.
 
-- Uma organização por usuário; o mesmo banco é compartilhado com isolamento lógico das linhas.
-- O cliente não escolhe nem altera `organization_id` nas gravações: a API usa a organização do usuário autenticado.
-- Sem política de organização na tabela, uma conta de organização é bloqueada.
-- Desativar uma organização encerra seus acessos e preserva registros. Reativar exige novo login.
-- O administrador global gerencia todas as organizações. Contas de organização não recebem essa permissão.
-- Em **Tokens**, escolha um usuário responsável da organização; o token herda sua organização e não amplia suas permissões.
-- Backups/storages/configuração são administrativos da instância. Não são compartilhados com as contas das organizações.
+**Tabelas próprias.** Cada organização tem as suas tabelas, com estrutura própria: duas organizações podem ter uma tabela `clientes` com campos diferentes, sem conflito. Para quem usa a API, o nome é só `clientes`; internamente o SETAPI guarda cada uma com o prefixo da organização (`o` + 10 caracteres hexadecimais + `_`, um padrão reservado).
 
-A API aceita `POST /api/organizations` com `{name}`, `PATCH /api/organizations/{id}` com `{name?,active?}` e `POST /api/tables` com `organization_isolated:true`. Tabelas existentes precisam de campo/política de organização e associação correta dos registros antes da liberação; dados não são distribuídos automaticamente.
+- Na API, as rotas de tabelas, campos, índices, permissões e registros aceitam `organization_id`. O administrador global trabalha na Plataforma sem ele e dentro da organização com ele. Usuários e tokens de uma organização trabalham sempre na própria e recebem 404 se apontarem para outra.
+- A estrutura (criar e alterar tabelas, campos, índices e permissões) é do administrador global e dos **administradores da organização**. O administrador global marca a conta como administrador da organização (`org_admin: true` em `POST /api/users` ou `PUT /api/users/{id}/access`). Essa conta trabalha só nas tabelas da própria organização, com acesso a todos os registros e campos delas; nunca altera tabelas da Plataforma nem de outra organização. Para usar pela API ou pelo MCP, o administrador global emite para ela um token com `admin: true`, que vale só dentro da organização. Os demais usuários da organização leem e gravam registros conforme as permissões.
+- Uma tabela nova de organização recebe uma política com todos os campos liberados para os usuários dela. Adicionar, renomear, retipar ou remover um campo atualiza essa política sozinho; restrinja em **Permissões da tabela**.
+- Relacionamentos (`references`) ficam dentro da mesma organização.
+- O tempo real (`/ws`) aceita `organization_id` no primeiro envio, e os eventos chegam com o nome da tabela sem prefixo.
+
+**Tabelas compartilhadas.** Na Plataforma continua existindo a tabela compartilhada entre organizações (`organization_isolated: true`): uma estrutura só, com o campo `organization_id` preenchido pela API e cada organização vendo só os próprios registros. Os usuários de organização continuam alcançando essas tabelas, a menos que a organização tenha uma tabela própria com o mesmo nome.
+
+- Uma organização por usuário. Em **Tokens**, o token de um usuário herda a organização dele e não amplia suas permissões.
+- Desativar uma organização encerra seus acessos e preserva os dados. Reativar exige novo login.
+- Storage: cada organização conecta o próprio; o administrador global também cria conexões para uma organização (`organization_id` no corpo). Backups do banco só vão para storage da Plataforma.
+
+A API aceita `POST /api/organizations` com `{name}` e `PATCH /api/organizations/{id}` com `{name?,active?}`.
 
 ## Autenticação dos alunos
 

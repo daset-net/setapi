@@ -11,7 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from psycopg import errors, Error as PGError
 from redis.exceptions import RedisError
 from redis.asyncio import Redis
-from . import db
+from uuid import UUID
+from . import db, tables
 from .config import settings
 from .security import authenticate, allowed, rate_limit
 import os
@@ -186,12 +187,19 @@ async def websocket(ws: WebSocket):
         requested = hello.get('tables', [])
         if not isinstance(requested, list) or len(requested) > 100 or not all(isinstance(t, str) for t in requested):
             raise HTTPException(422, 'Invalid subscriptions')
-        if any(not allowed(user, table, 'read') for table in requested):
+        organization = UUID(hello['organization_id']) if hello.get('organization_id') else None
+        def resolve():
+            with db.connection() as conn:
+                return {tables.target(conn, user, t, organization): t for t in requested}
+        # Stored name -> API name: events carry the stored one, clients only ever see the API one.
+        names = await asyncio.to_thread(resolve)
+        if any(not allowed(user, name, 'read', physical) for physical, name in names.items()):
             raise HTTPException(403, 'Subscription denied')
-        routing=await asyncio.to_thread(policies.routing_rules,user,requested)
+        stored = list(names)
+        routing=await asyncio.to_thread(policies.routing_rules,user,stored)
         client = Redis.from_url(settings().redis_url, decode_responses=True)
         subscription = client.pubsub()
-        channels=policies.channels(user,requested,routing)
+        channels=policies.channels(user,stored,routing)
         await subscription.subscribe(*channels)
         await ws.send_json({'type': 'ready', 'tables': requested, 'resync': True})
         receiver = asyncio.create_task(ws.receive())
@@ -205,15 +213,15 @@ async def websocket(ws: WebSocket):
             message = await subscription.get_message(ignore_subscribe_messages=True, timeout=1)
             if message:
                 event = json.loads(message['data'])
-                if event['table'] in requested and not policies.skip_event(user,event,routing):
+                if event['table'] in names and not policies.skip_event(user,event,routing):
                     user = await asyncio.to_thread(authenticate, raw)
-                    if allowed(user, event['table'], 'read') and await asyncio.to_thread(policies.visible_event,user,event):
-                        await asyncio.wait_for(ws.send_json({'type':'change', **{k:v for k,v in event.items() if k in ('table','id','operation','event_id')}}),timeout=5)
+                    if allowed(user, names[event['table']], 'read', event['table']) and await asyncio.to_thread(policies.visible_event,user,event):
+                        await asyncio.wait_for(ws.send_json({'type':'change', **{k:v for k,v in event.items() if k in ('id','operation','event_id')}, 'table':names[event['table']]}),timeout=5)
             if asyncio.get_running_loop().time()-last_check>=10:
                 user=await asyncio.to_thread(authenticate, raw)
-                if any(not allowed(user,t,'read') for t in requested):raise HTTPException(403,'Subscription revoked')
-                routing=await asyncio.to_thread(policies.routing_rules,user,requested)
-                updated=policies.channels(user,requested,routing)
+                if any(not allowed(user,name,'read',physical) for physical,name in names.items()):raise HTTPException(403,'Subscription revoked')
+                routing=await asyncio.to_thread(policies.routing_rules,user,stored)
+                updated=policies.channels(user,stored,routing)
                 if updated!=channels:
                     await subscription.unsubscribe(*channels)
                     await subscription.subscribe(*updated)

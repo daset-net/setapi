@@ -73,7 +73,7 @@ def authenticate(raw):
         raise HTTPException(401, 'Authentication required')
     with db.connection() as conn:
         row = conn.execute('''SELECT t.id AS token_id,t.scopes,t.admin,t.kind,u.id,u.email,u.role,
-          u.scopes AS user_scopes,u.tenant_id,u.audience,(u.mfa_secret IS NOT NULL) AS mfa_enabled FROM setapi.tokens t JOIN setapi.users u ON u.id=t.user_id LEFT JOIN setapi.organizations o ON o.id=u.tenant_id
+          u.scopes AS user_scopes,u.tenant_id,u.audience,u.org_admin,(u.mfa_secret IS NOT NULL) AS mfa_enabled FROM setapi.tokens t JOIN setapi.users u ON u.id=t.user_id LEFT JOIN setapi.organizations o ON o.id=u.tenant_id
           WHERE t.digest=%s AND t.revoked_at IS NULL AND t.expires_at>now() AND u.active AND (u.tenant_id IS NULL OR o.active)''',
           (hashlib.sha256(raw.encode()).hexdigest(),)).fetchone()
     if not row:
@@ -116,15 +116,31 @@ def storage_manager(user=Depends(principal)):
     return user
 
 
-def allowed(user, table, action):
+def is_org_admin(user):
+    """Administrator of one organization: its session or an administrative token of that account."""
+    return bool(user.get('org_admin')) and user['admin'] and user.get('tenant_id') is not None and user.get('audience', 'panel') == 'panel'
+
+
+def builder(user=Depends(principal)):
+    """Table structure: the global administrator anywhere, an organization administrator in their organization."""
+    if not (is_admin(user) or is_org_admin(user)):
+        raise HTTPException(403, 'Administrator token required')
+    return user
+
+
+def allowed(user, table, action, physical=None):
     if is_admin(user):
         return True
+    if physical is not None and is_org_admin(user):
+        from .tables import own_table
+        if own_table(user, physical):
+            return True
     token_allowed = action in user['scopes'].get(table, [])
     return token_allowed and (user['role'] == 'admin' or action in user['user_scopes'].get(table, []))
 
 
-def authorize(user, table, action):
-    if not allowed(user, table, action):
+def authorize(user, table, action, physical=None):
+    if not allowed(user, table, action, physical):
         raise HTTPException(403, 'This token does not allow that operation')
 
 

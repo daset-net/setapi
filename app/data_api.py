@@ -12,10 +12,11 @@ router = APIRouter(prefix='/api/data', tags=['Data'])
 def list_records(table: str, limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0, le=10000),
                  sort: str = Query('-created_at', description='Field to sort by; prefix with - for descending.'),
                  filter: str = Query('{}', description='JSON object of equality conditions, e.g. {"status":"ativo"}; at most 20.'),
-                 include_total: bool = True, user=Depends(principal)):
+                 include_total: bool = True, organization_id: UUID | None = Query(None, description='Organization whose tables to use; omit for the platform. Organization users always work in their own.'), user=Depends(principal)):
     """List records of a table, paginated with limit and offset."""
-    authorize(user, table, 'read')
     with db.connection() as conn:
+        name, table = table, tables.target(conn, user, table, organization_id)
+        authorize(user, name, 'read', table)
         tables.require_managed(conn,table)
         columns=tables.columns(conn,table)
         cols = {c['name']: c['type'] for c in columns}
@@ -43,7 +44,7 @@ def list_records(table: str, limit: int = Query(50, ge=1, le=200), offset: int =
         rule = policies.policy(conn, table, user)
         if not postgrest.enabled():
             return _native_list(conn, table, readable, where, params, field, sort, limit, offset, include_total)
-    return postgrest.read(user, table, rule, readable, filters, sort, limit, offset, include_total)
+    return postgrest.read(user, table, rule, readable, filters, sort, limit, offset, include_total, scope=name)
 
 
 def _native_list(conn, table, readable, where, params, field, sort, limit, offset, include_total):
@@ -64,9 +65,10 @@ def _native_list(conn, table, readable, where, params, field, sort, limit, offse
 
 
 @router.get('/{table}/{record_id}')
-def get_record(table: str, record_id: UUID, user=Depends(principal)):
-    authorize(user, table, 'read')
+def get_record(table: str, record_id: UUID, organization_id: UUID | None = Query(None, description='Organization whose tables to use; omit for the platform. Organization users always work in their own.'), user=Depends(principal)):
     with db.connection() as conn:
+        name, table = table, tables.target(conn, user, table, organization_id)
+        authorize(user, name, 'read', table)
         tables.require_managed(conn,table)
         readable=policies.fields(conn,table,user,'read')
         scope,params=policies.constraint(conn,table,user)
@@ -74,7 +76,7 @@ def get_record(table: str, record_id: UUID, user=Depends(principal)):
         if not postgrest.enabled():
             row = conn.execute(sql.SQL('SELECT {} FROM data.{} WHERE id=%s AND {}').format(sql.SQL(',').join(map(sql.Identifier,readable)),sql.Identifier(table),scope), [record_id]+params).fetchone()
     if postgrest.enabled():
-        result = postgrest.read(user, table, rule, readable, {'id': str(record_id)}, 'id', 1, 0, False)
+        result = postgrest.read(user, table, rule, readable, {'id': str(record_id)}, 'id', 1, 0, False, scope=name)
         row = result['data'][0] if result['data'] else None
     if not row:
         raise HTTPException(404, 'Record not found')
@@ -82,9 +84,10 @@ def get_record(table: str, record_id: UUID, user=Depends(principal)):
 
 
 @router.post('/{table}', status_code=201)
-def create_record(table: str, body: dict, user=Depends(principal)):
-    authorize(user, table, 'create')
+def create_record(table: str, body: dict, organization_id: UUID | None = Query(None, description='Organization whose tables to use; omit for the platform. Organization users always work in their own.'), user=Depends(principal)):
     with db.connection() as conn:
+        name, table = table, tables.target(conn, user, table, organization_id)
+        authorize(user, name, 'create', table)
         tables.require_managed(conn,table)
         policies.check_references(conn,table,user,body)
         values = tables.values(conn, table, policies.writing(conn,table,user,body,create=True))
@@ -93,14 +96,15 @@ def create_record(table: str, body: dict, user=Depends(principal)):
             sql.SQL(',').join(sql.Placeholder() for _ in values)), list(values.values())).fetchone()
         readable=policies.fields(conn,table,user,'read')
         row={k:v for k,v in row.items() if k in readable}
-        audit(conn, user, 'record.create', table, {'id': str(row['id'])})
+        audit(conn, user, 'record.create', name, {'id': str(row['id'])})
     return {'data': row}
 
 
 @router.patch('/{table}/{record_id}')
-def update_record(table: str, record_id: UUID, body: dict, user=Depends(principal)):
-    authorize(user, table, 'update')
+def update_record(table: str, record_id: UUID, body: dict, organization_id: UUID | None = Query(None, description='Organization whose tables to use; omit for the platform. Organization users always work in their own.'), user=Depends(principal)):
     with db.connection() as conn:
+        name, table = table, tables.target(conn, user, table, organization_id)
+        authorize(user, name, 'update', table)
         tables.require_managed(conn,table)
         policies.check_references(conn,table,user,body)
         values = tables.values(conn, table, policies.writing(conn,table,user,body))
@@ -112,18 +116,19 @@ def update_record(table: str, record_id: UUID, body: dict, user=Depends(principa
             raise HTTPException(404, 'Record not found')
         readable=policies.fields(conn,table,user,'read')
         row={k:v for k,v in row.items() if k in readable}
-        audit(conn, user, 'record.update', table, {'id': str(record_id)})
+        audit(conn, user, 'record.update', name, {'id': str(record_id)})
     return {'data': row}
 
 
 @router.delete('/{table}/{record_id}', status_code=204)
-def delete_record(table: str, record_id: UUID, user=Depends(principal)):
-    authorize(user, table, 'delete')
+def delete_record(table: str, record_id: UUID, organization_id: UUID | None = Query(None, description='Organization whose tables to use; omit for the platform. Organization users always work in their own.'), user=Depends(principal)):
     with db.connection() as conn:
+        name, table = table, tables.target(conn, user, table, organization_id)
+        authorize(user, name, 'delete', table)
         tables.require_managed(conn,table)
         tables.exists(conn, table)
         scope,params=policies.constraint(conn,table,user)
         row = conn.execute(sql.SQL('DELETE FROM data.{} WHERE id=%s AND {} RETURNING id').format(sql.Identifier(table),scope), [record_id]+params).fetchone()
         if not row:
             raise HTTPException(404, 'Record not found')
-        audit(conn, user, 'record.delete', table, {'id': str(record_id)})
+        audit(conn, user, 'record.delete', name, {'id': str(record_id)})

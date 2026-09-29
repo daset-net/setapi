@@ -17,6 +17,7 @@ class StorageCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     provider: str
     config: dict
+    organization_id: UUID | None = Field(None, description='Organization that owns the connection; administrators only. Others always use their own.')
 
 
 def name_taken(conn, organization_id, name, exclude=None):
@@ -34,8 +35,8 @@ def list_storages(user=Depends(storage_manager)):
 @router.post('/storages', status_code=201)
 def create_storage(body: StorageCreate, user=Depends(storage_manager)):
     storage.validate(body.provider, body.config)
-    organization = user.get('tenant_id')
     with db.connection() as conn:
+        organization = storage.owner(conn, user, body.organization_id)
         if name_taken(conn, organization, body.name):
             raise HTTPException(409, 'Já existe uma conexão com esse nome.')
         row = conn.execute('INSERT INTO setapi.storages(name,provider,config_encrypted,organization_id) VALUES(%s,%s,%s,%s) RETURNING id,name,provider,organization_id',

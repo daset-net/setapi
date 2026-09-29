@@ -135,6 +135,18 @@ def scope(user):
     return ANY if is_admin(user) else user.get('tenant_id')
 
 
+def owner(conn, user, requested=None):
+    """Organization a new connection belongs to: the administrator may pick one, others get their own."""
+    from .security import is_admin
+    if not is_admin(user):
+        if requested is not None and requested != user.get('tenant_id'):
+            raise HTTPException(404, 'Organization not found')
+        return user.get('tenant_id')
+    if requested is not None and not conn.execute('SELECT 1 FROM setapi.organizations WHERE id=%s AND active', (requested,)).fetchone():
+        raise HTTPException(422, 'Choose an active organization')
+    return requested
+
+
 def get(conn, storage_id, organization=ANY):
     row = conn.execute('SELECT * FROM setapi.storages WHERE id=%s', (storage_id,)).fetchone()
     if not row or (organization is not ANY and row['organization_id'] != organization):

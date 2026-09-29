@@ -74,3 +74,6 @@ nav button.active::before{content:"";position:absolute;left:0;top:9px;bottom:9px
 .step-done b{background:var(--green);color:#fff}
 .locked-org{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:13px 15px;border:1px solid #d7e6d3;border-radius:12px;background:#f2f8ef;font-size:13px;font-weight:600;color:#2c5a43;margin:18px 0}
 .row-actions{white-space:nowrap}
+
+.org-switcher{margin:0 6px 6px;padding:12px;border:1px solid #2c4a3e;border-radius:9px;background:#1a372d;display:grid;gap:7px}.org-switcher label,.org-switcher>span{font-size:9px;letter-spacing:1.5px;color:#789586;margin:0;font-weight:600}.org-switcher select{margin:0;padding:9px 10px;background:#142c25;color:#e7f0e4;border-color:#2c4a3e;font-size:13px;font-weight:600}.org-switcher strong{color:#e7f0e4;font-size:13px}
+@media(max-width:650px){.org-switcher{margin:0 0 10px}}

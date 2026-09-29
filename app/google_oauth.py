@@ -70,6 +70,7 @@ def put_config(body: ClientConfig, user=Depends(admin)):
 class Connect(BaseModel):
     name: str = Field(default='Google Drive', min_length=1, max_length=100)
     storage_id: UUID | None = None
+    organization_id: UUID | None = Field(None, description='Organization that owns the new connection; administrators only.')
 
 
 @router.post('/connect')
@@ -78,7 +79,8 @@ def connect(body: Connect, user=Depends(session_manager)):
     if not config:
         raise HTTPException(409, 'Conexão com Google indisponível: defina SETAPI_GOOGLE_CLIENT_ID e SETAPI_GOOGLE_CLIENT_SECRET no servidor.')
     folder = None
-    organization = user.get('tenant_id')
+    with db.connection() as conn:
+        organization = storage.owner(conn, user, body.organization_id)
     if not body.storage_id:
         with db.connection() as conn:
             if conn.execute('SELECT 1 FROM setapi.storages WHERE organization_id IS NOT DISTINCT FROM %s AND name=%s', (organization, body.name)).fetchone():
