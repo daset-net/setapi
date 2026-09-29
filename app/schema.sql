@@ -123,3 +123,7 @@ DO $$ BEGIN
   ALTER TABLE setapi.users ADD CONSTRAINT users_org_admin_needs_organization CHECK(NOT org_admin OR (tenant_id IS NOT NULL AND audience='panel'));
  END IF;
 END $$;
+-- Branding and limits the global administrator changes in Settings; secrets stay in setapi.integrations.
+CREATE TABLE IF NOT EXISTS setapi.platform_settings (
+ name text PRIMARY KEY, value jsonb NOT NULL DEFAULT '{}'
+);

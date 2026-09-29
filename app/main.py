@@ -27,6 +27,8 @@ from .mcp import router as mcp_router
 from .accounts import router as accounts_router
 from .organizations import router as organizations_router
 from .policies import router as policies_router
+from .platform_settings import router as platform_router
+from . import platform_settings
 from . import policies
 from fastapi.exceptions import RequestValidationError
 from fastapi import Depends
@@ -48,7 +50,7 @@ app.add_middleware(CORSMiddleware, allow_origins=settings().cors_origins, allow_
 
 def upload_limit(path):
     # MCP carries files as base64 inside JSON, about 4/3 of their size.
-    megabytes = settings().max_upload_mb + 1
+    megabytes = platform_settings.current()['max_upload_mb'] + 1
     return (megabytes * 4 // 3 + 1 if path == '/mcp' else megabytes) * 1024 * 1024
 
 
@@ -161,6 +163,7 @@ app.include_router(mcp_router)
 app.include_router(accounts_router)
 app.include_router(organizations_router)
 app.include_router(policies_router)
+app.include_router(platform_router)
 
 
 @app.websocket('/ws')

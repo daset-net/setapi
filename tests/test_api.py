@@ -133,3 +133,17 @@ def test_token_without_expiry_stays_valid(admin_client):
     listed=next(t for t in c.get('/api/tokens').json()['data'] if t['id']==token['id'])
     assert listed['expires_at'].startswith('9999-12-31')
     assert c.post('/api/tokens',json={'name':'Fora do limite','hours':9000}).status_code==422
+
+
+def test_platform_settings_brand_and_limits(admin_client, client):
+    from app import platform_settings
+    assert client.get('/api/platform/branding').json()['name'] == 'SETAPI'
+    base = admin_client.get('/api/platform/settings').json()
+    assert admin_client.put('/api/platform/settings', json={**base, 'color': 'green'}).status_code == 422
+    assert admin_client.put('/api/platform/settings', json={**base, 'token_hours': 5}).status_code == 422
+    saved = admin_client.put('/api/platform/settings', json={**base, 'name': 'Minha Nuvem', 'color': '#1A2B3C', 'session_hours': 2, 'max_upload_mb': 1}).json()
+    assert saved['color'] == '#1a2b3c' and saved['session_hours'] == 2
+    assert client.get('/api/platform/branding').json() == {'name': 'Minha Nuvem', 'login_message': base['login_message'], 'color': '#1a2b3c', 'token_hours': 720}
+    assert platform_settings.current()['max_upload_mb'] == 1
+    admin_client.put('/api/platform/settings', json=base)
+    assert platform_settings.current()['name'] == 'SETAPI'

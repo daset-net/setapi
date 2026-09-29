@@ -1,7 +1,7 @@
 """Administrator notifications through an agent inbox provider, configured by the global administrator."""
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
-from . import db, storage, mail, mail_providers as providers
+from . import db, storage, mail, mail_providers as providers, platform_settings
 from .security import admin, audit, rate_limit
 
 router = APIRouter(prefix='/api/mail', tags=['E-mail'])
@@ -95,7 +95,7 @@ def send_test(user=Depends(admin)):
     if not config:
         raise HTTPException(409, 'Configure um provedor de e-mail primeiro.')
     try:
-        providers.send(config, user['email'], 'SETAPI — e-mail de teste',
+        providers.send(config, user['email'], platform_settings.current()['name'] + ' — e-mail de teste',
                        'Este é um teste do SETAPI. Se você recebeu, as notificações e a recuperação de senha vão chegar neste e-mail.')
     except providers.ProviderError as exc:
         raise HTTPException(502, str(exc))

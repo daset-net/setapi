@@ -2,7 +2,7 @@ import os
 import smtplib
 import ssl
 from email.message import EmailMessage
-from . import db, storage, mail_providers
+from . import db, storage, mail_providers, platform_settings
 
 ADMINS="SELECT email FROM setapi.users WHERE role='admin' AND tenant_id IS NULL AND audience='panel' AND active"
 # Panel users: global administrators and each organization's panel users. App users (students) are never reached.
@@ -46,14 +46,14 @@ def notify_admins(conn,subject,text):
     """Queue a notification for every active global administrator."""
     if not ready():return
     for row in conn.execute(ADMINS).fetchall():
-        queue(conn,row['email'],'SETAPI — '+subject,text)
+        queue(conn,row['email'],platform_settings.current()['name']+' — '+subject,text)
 
 
 def notify_organization(conn,organization_id,subject,text):
     """Queue a notification for the panel users of one organization."""
     if not ready():return
     for row in conn.execute(PANEL+' AND u.tenant_id=%s',(organization_id,)).fetchall():
-        queue(conn,row['email'],'SETAPI — '+subject,text)
+        queue(conn,row['email'],platform_settings.current()['name']+' — '+subject,text)
 
 
 def send_smtp(payload):

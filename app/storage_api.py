@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
-from . import db, storage
+from . import db, storage, platform_settings
 from .config import settings
 from .security import admin, principal, is_admin, audit, can_manage_storage, storage_manager
 
@@ -103,7 +103,7 @@ def upload_file(storage_id: UUID, file: UploadFile, user=Depends(storage_manager
         with os.fdopen(fd, 'wb') as stream:
             while chunk := file.file.read(1024 * 1024):
                 size += len(chunk)
-                if size > settings().max_upload_mb * 1024 * 1024:
+                if size > platform_settings.current()['max_upload_mb'] * 1024 * 1024:
                     raise HTTPException(413, 'File exceeds upload limit')
                 stream.write(chunk)
         if not size:

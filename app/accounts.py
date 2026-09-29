@@ -9,12 +9,12 @@ import secrets
 import struct
 import time
 from datetime import datetime, timezone, timedelta
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field, ConfigDict
 from psycopg.types.json import Jsonb
-from . import db, storage, mail
+from . import db, storage, mail, platform_settings
 from .organizations import require_active
 from .security import principal, admin, issue, audit, rate_limit, verify_password, hash_password, DUMMY_HASH, validate_scopes
 
@@ -71,7 +71,7 @@ def login_user(body, request, audience):
         if current['tenant_id'] is not None and not conn.execute('SELECT 1 FROM setapi.organizations WHERE id=%s AND active',(current['tenant_id'],)).fetchone():
             raise HTTPException(401,'Invalid credentials or organization unavailable')
         verify_otp(conn,current,body.otp)
-        token=issue(conn,user['id'],'App session' if audience=='app' else 'Panel session','session',current['scopes'],audience=='panel' and (current['role']=='admin' or current['org_admin']),12)
+        token=issue(conn,user['id'],'App session' if audience=='app' else 'Panel session','session',current['scopes'],audience=='panel' and (current['role']=='admin' or current['org_admin']),platform_settings.current()['session_hours'])
         audit(conn,user,'auth.login',audience)
     return current,token
 
@@ -148,7 +148,7 @@ def mfa_setup(body:Reauth,user=Depends(principal)):
         raise HTTPException(409,'MFA is already enabled')
     secret=base64.b32encode(secrets.token_bytes(20)).decode()
     db.cache.set('setapi:mfa:'+str(user['token_id']),storage.encrypt({'secret':secret,'password_hash':row['password_hash']}),ex=600)
-    return {'secret':secret,'uri':'otpauth://totp/SETAPI?'+urlencode({'secret':secret,'issuer':'SETAPI'})}
+    return {'secret':secret,'uri':'otpauth://totp/'+quote(platform_settings.current()['name'])+'?'+urlencode({'secret':secret,'issuer':platform_settings.current()['name']})}
 
 
 @router.post('/auth/mfa/enable')
@@ -191,7 +191,7 @@ def queue_email(conn,user,purpose):
     conn.execute('DELETE FROM setapi.action_tokens WHERE user_id=%s AND purpose=%s',(user['id'],purpose))
     conn.execute('INSERT INTO setapi.action_tokens VALUES(%s,%s,%s,%s)',(digest(token),user['id'],purpose,datetime.now(timezone.utc)+timedelta(minutes=30)))
     link=settings().public_url+'/#'+urlencode({'action':purpose,'token':token})
-    conn.execute('INSERT INTO setapi.mail_queue(payload_encrypted) VALUES(%s)',(storage.encrypt({'to':user['email'],'subject':'SETAPI — '+('Confirme seu e-mail' if purpose=='verify' else 'Redefina sua senha'),'text':'Abra este link em até 30 minutos:\n'+link+'\nSe não solicitou, ignore esta mensagem.'}),))
+    conn.execute('INSERT INTO setapi.mail_queue(payload_encrypted) VALUES(%s)',(storage.encrypt({'to':user['email'],'subject':platform_settings.current()['name']+' — '+('Confirme seu e-mail' if purpose=='verify' else 'Redefina sua senha'),'text':'Abra este link em até 30 minutos:\n'+link+'\nSe não solicitou, ignore esta mensagem.'}),))
 
 
 class EmailRequest(BaseModel):

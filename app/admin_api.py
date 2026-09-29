@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field, ConfigDict
 from psycopg import sql
 from psycopg.types.json import Jsonb
 from argon2.exceptions import VerificationError
-from . import db, tables, policies
+from . import db, tables, policies, platform_settings
 from .organizations import require_active
 from .config import settings
 from .security import admin, builder, is_org_admin, principal, is_admin, allowed, audit, issue, validate_scopes, passwords, DUMMY_HASH, verify_password, hash_password, rate_limit
@@ -23,7 +23,7 @@ class Login(BaseModel):
 def login(body: Login, request: Request, response: Response):
     from .accounts import login_user
     user, token = login_user(body, request, 'panel')
-    response.set_cookie('setapi_session', token['token'], httponly=True, secure=settings().cookie_secure, samesite='lax', max_age=43200)
+    response.set_cookie('setapi_session', token['token'], httponly=True, secure=settings().cookie_secure, samesite='lax', max_age=platform_settings.current()['session_hours']*3600)
     response.headers['Cache-Control'] = 'no-store'
     return {'user': {'id': user['id'], 'email': user['email'], 'role': user['role']}, 'expires_at': token['expires_at']}
 
@@ -49,7 +49,7 @@ def status(user=Depends(admin)):
           (SELECT count(*) FROM setapi.outbox) AS pending_events,
           (SELECT count(*) FROM setapi.backups WHERE status='queued') AS queued_backups''').fetchone()
     from . import postgrest
-    return {'read_engine': 'postgrest' if postgrest.enabled() else 'native', 'postgres': version, 'redis': db.cache.ping(), 'worker_alive': bool(db.cache.get('setapi:worker:heartbeat')), 'db_pool':db.pool.get_stats(), **counts}
+    return {'read_engine': 'postgrest' if postgrest.enabled() else 'native', 'postgres': version, 'redis': db.cache.ping(), 'worker_alive': bool(db.cache.get('setapi:worker:heartbeat')), 'db_pool':db.pool.get_stats(), 'cors_origins': settings().cors_origins, **counts}
 
 
 ORG = Query(None, description='Organization whose tables to use; omit for the platform. Organization users always work in their own.')

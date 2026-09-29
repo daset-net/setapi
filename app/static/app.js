@@ -2,7 +2,7 @@
 const $ = s => document.querySelector(s);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const state = {user:null, tables:[], page:'overview', table:null, offset:0, filter:'{}', socket:null, org:null};
-const titles = {organizations:['Organizações','Cada organização tem as próprias tabelas, usuários, tokens e storage.'],security:['Segurança da conta','Senha, autenticação em duas etapas e sessões.'],overview:['Visão geral','Acompanhe a plataforma e as organizações.'],tables:['Tabelas e API','Estruture seus dados. A API acompanha cada alteração.'],users:['Usuários','Controle quem pode acessar esta organização.'],admins:['Administradores','Contas globais que administram a plataforma.'],tokens:['Tokens de acesso','Permissões explícitas para cada integração.'],storages:['Storage e arquivos','Conecte os provedores desta organização e organize os arquivos.'],backups:['Backups','Cópias criptografadas do banco e das configurações da plataforma.'],audit:['Atividade','Histórico das operações realizadas pela API.'],settings:['Configurações','E-mail, aplicativo Google e o funcionamento da plataforma.']};
+const titles = {organizations:['Organizações','Cada organização tem as próprias tabelas, usuários, tokens e storage.'],security:['Segurança da conta','Senha, autenticação em duas etapas e sessões.'],overview:['Visão geral','Acompanhe a plataforma e as organizações.'],tables:['Tabelas e API','Estruture seus dados. A API acompanha cada alteração.'],users:['Usuários','Controle quem pode acessar esta organização.'],admins:['Administradores','Contas globais que administram a plataforma.'],tokens:['Tokens de acesso','Permissões explícitas para cada integração.'],storages:['Storage e arquivos','Conecte os provedores desta organização e organize os arquivos.'],backups:['Backups','Cópias criptografadas do banco e das configurações da plataforma.'],audit:['Atividade','Histórico das operações realizadas pela API.'],settings:['Configurações','Personalização, e-mail, aplicativo Google e opções avançadas da plataforma.']};
 function pageTitle(){return titles[state.page==='users'&&state.user.admin&&!state.org?'admins':state.page];}
 function scoped(path){
  // The administrator's selected organization applies to tables, records and activity, as in the API.
@@ -43,6 +43,15 @@ async function api(path, options={}) {
  if(!response.ok) {const err=await response.json().catch(()=>({detail:'Falha na conexão'}));throw Error(typeof err.detail==='string'?err.detail:JSON.stringify(err.detail));}
  return response.status===204?null:response.json();
 }
+// Name, login message and color chosen in Settings apply before anyone signs in.
+function applyBranding(b){
+ state.brand=b;document.title=b.name+' · Console';
+ document.querySelectorAll('[data-brand-name]').forEach(e=>e.textContent=b.name);
+ document.querySelectorAll('[data-brand-initial]').forEach(e=>e.textContent=b.name.trim().charAt(0).toUpperCase());
+ $('#login-message').textContent=b.login_message;$('#login-message').hidden=!b.login_message;
+ document.documentElement.style.setProperty('--green',b.color);
+}
+fetch('/api/platform/branding').then(r=>r.ok?r.json():null).then(b=>b&&applyBranding(b)).catch(()=>{});
 function toast(text){$('#toast').textContent=text;$('#toast').hidden=false;setTimeout(()=>$('#toast').hidden=true,5000);}
 function empty(title,text){return `<div class="empty"><strong>${esc(title)}</strong>${esc(text)}</div>`;}
 function table(headers,rows){return `<div class="table-wrap"><table><thead><tr>${headers.map(h=>`<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`;}
@@ -195,7 +204,7 @@ async function backupsPage(){
  $('#refresh-backups').onclick=()=>render();$('#schedule').onclick=()=>{if(!stores.length)return toast('Conecte primeiro um destino em Destinos dos backups. O storage das organizações não recebe backups.');modal('Agendar backups',chooser()+field('every_hours','Intervalo em horas',24,'number')+field('retention','Quantidade de cópias a manter',7,'number')+'<p class="help">As cópias antigas deste agendamento serão excluídas do provedor após novos backups bem-sucedidos.</p>',async f=>{await api('/backup-schedules',{method:'POST',body:{storage_id:f.get('storage_id'),every_hours:Number(f.get('every_hours')),retention:Number(f.get('retention'))}});});};document.querySelectorAll('[data-unschedule]').forEach(b=>b.onclick=async()=>{await api('/backup-schedules/'+b.dataset.unschedule,{method:'DELETE'});await render();});
 }
 async function settingsPage(){
- const [cfg,provs,google,status,tokens]=await Promise.all([api('/mail/config'),api('/mail/providers'),api('/integrations/google/config'),api('/status'),api('/tokens')]);
+ const [cfg,provs,google,status,tokens,plat]=await Promise.all([api('/mail/config'),api('/mail/providers'),api('/integrations/google/config'),api('/status'),api('/tokens'),api('/platform/settings')]);
  const label=id=>(provs.data.find(p=>p.id===id)||{}).label||id;
  const row=(k,v)=>`<div class="split-row"><span>${esc(k)}</span><strong>${esc(v)}</strong></div>`;
  const mail='<div class="card"><div class="card-head"><h3>E-mail da plataforma</h3>'+(cfg.configured?badge(label(cfg.provider)):badge('Não configurado',false))+'</div>'+
@@ -207,11 +216,18 @@ async function settingsPage(){
   '<div class="split-row"><span>URI de redirecionamento</span><code>'+esc(google.redirect_uri)+'</code></div>'+
   '<div class="toolbar card-actions"><button id="google-edit">'+(google.source==='panel'?'Alterar credenciais':'＋ Configurar Google')+'</button>'+(google.source==='panel'?'<button class="danger" id="google-remove">Remover</button>':'')+'</div>'+
   '<p class="help">'+(google.source==='environment'?'Hoje o Client ID vem de SETAPI_GOOGLE_CLIENT_ID e SETAPI_GOOGLE_CLIENT_SECRET. O que for salvo aqui passa a valer no lugar das variáveis. ':'')+'O Client Secret é criptografado no banco e nunca volta ao navegador. As conexões já feitas continuam funcionando mesmo se as credenciais mudarem.</p></div>';
- const system='<div class="card"><h3>Sistema</h3>'+row('Versão',document.querySelector('.version').textContent.replace('SETAPI / ',''))+row('PostgreSQL',status.postgres)+row('Leitura da API',status.read_engine==='postgrest'?'PostgREST':'Nativa')+row('Redis',status.redis?'Conectado':'Indisponível')+row('Worker de eventos e backups',status.worker_alive?'Online':'Sem sinal')+row('Endereço público',location.origin)+'<p class="help">Banco, Redis, chave de criptografia e endereço público são definidos nas variáveis do serviço.</p></div>';
+ const hoursLabel=h=>h%24?h+' horas':(h/24)+(h===24?' dia':' dias');
+ const look='<div class="card"><div class="card-head"><h3>Personalização</h3><span class="swatch" id="brand-swatch"></span></div>'+row('Nome da plataforma',plat.name)+row('Mensagem do login',plat.login_message||'—')+row('Cor principal',plat.color)+
+  '<div class="toolbar card-actions"><button id="look-edit">Personalizar</button></div><p class="help">O nome aparece na tela de login, na barra lateral, no assunto dos e-mails e no aplicativo autenticador.</p></div>';
+ const advanced='<div class="card"><h3>Avançado</h3>'+row('Duração do login',hoursLabel(plat.session_hours))+row('Tamanho máximo de arquivo',plat.max_upload_mb+' MB')+row('Validade padrão de novos tokens',(EXPIRY_CHOICES.find(([v])=>v===String(plat.token_hours))||[,plat.token_hours+' horas'])[1])+
+  '<div class="toolbar card-actions"><button id="advanced-edit">Alterar</button></div><p class="help">A nova duração do login vale para as próximas entradas; quem já está conectado continua até a sessão atual expirar.</p></div>';
+ const system='<div class="card"><h3>Sistema</h3>'+row('Versão',document.querySelector('.version').textContent.replace('SETAPI / ',''))+row('PostgreSQL',status.postgres)+row('Leitura da API',status.read_engine==='postgrest'?'PostgREST':'Nativa')+row('Redis',status.redis?'Conectado':'Indisponível')+row('Worker de eventos e backups',status.worker_alive?'Online':'Sem sinal')+row('Endereço público',location.origin)+row('Origens liberadas (CORS)',status.cors_origins.length?status.cors_origins.join(', '):'Somente o próprio endereço')+'<p class="help">Banco, Redis, chave de criptografia, endereço público e origens CORS são definidos nas variáveis do serviço.</p></div>';
  // Tokens now belong to organizations; old platform tokens stay listed here until revoked.
  const legacy=tokens.data.filter(t=>!t.organization_id&&!t.revoked_at);
  const legacyCard=legacy.length?'<div class="card"><h3>Tokens da plataforma</h3><p>Tokens criados antes de os tokens passarem a pertencer às organizações. Continuam válidos até expirar ou serem revogados. Os novos são criados dentro de cada organização.</p>'+table(['NOME','PREFIXO','ACESSO','VALIDADE',''],legacy.map(r=>`<tr><td>${esc(r.name)}</td><td><code>${esc(r.prefix)}…</code></td><td>${r.admin?badge('Administrativo'):scopeSummary(r.scopes)}</td><td>${esc(expiryLabel(r.expires_at))}</td><td class="row-actions"><button class="danger" data-revoke="${esc(r.id)}">Revogar</button></td></tr>`))+'</div>':'';
- $('#content').innerHTML='<div class="settings-grid">'+mail+googleCard+'</div>'+system+legacyCard;
+ $('#content').innerHTML='<div class="settings-grid">'+look+advanced+'</div><div class="settings-grid">'+mail+googleCard+'</div>'+system+legacyCard;
+ $('#brand-swatch').style.background=plat.color;
+ $('#look-edit').onclick=()=>platformDialog(plat,'look');$('#advanced-edit').onclick=()=>platformDialog(plat,'advanced');
  $('#mail-edit').onclick=()=>mailDialog(cfg,provs.data);
  $('#google-edit').onclick=()=>googleDialog(google);
  if(google.source==='panel')$('#google-remove').onclick=()=>modal('Remover credenciais do Google','<p>Novas conexões com o Google Drive passam a usar as variáveis do servidor, se existirem; sem elas, ficam indisponíveis. As conexões existentes continuam funcionando.</p>',async()=>{await api('/integrations/google/config',{method:'DELETE'});toast('Credenciais do Google removidas.');},'Remover');
@@ -219,6 +235,18 @@ async function settingsPage(){
  if(!cfg.configured)return;
  $('#mail-test').onclick=async e=>{e.target.disabled=true;try{const r=await api('/mail/test',{method:'POST'});toast('Teste enviado para '+r.to+'.');}catch(err){toast(err.message);}finally{e.target.disabled=false;}};
  $('#mail-remove').onclick=()=>modal('Remover e-mail','<p>O SETAPI deixa de enviar notificações e recuperação de senha para administradores e organizações.</p>',async()=>{await api('/mail/config',{method:'DELETE'});toast('Provedor de e-mail removido.');},'Remover');
+}
+function platformDialog(plat,part){
+ const keep=Object.entries(plat).map(([k,v])=>`<input type="hidden" name="${esc(k)}" value="${esc(v)}">`).join('');
+ const fields=part==='look'
+  ?field('name','Nome da plataforma',plat.name)+'<label>Mensagem do login<input name="login_message" maxlength="160" value="'+esc(plat.login_message)+'"></label><label>Cor principal<input name="color" type="color" value="'+esc(plat.color)+'"></label><p class="help">Use uma cor escura o bastante para o texto branco dos botões continuar legível.</p>'
+  :field('session_hours','Duração do login, em horas (1 a 720)',plat.session_hours,'number')+field('max_upload_mb','Tamanho máximo de arquivo, em MB (1 a 2048)',plat.max_upload_mb,'number')+expirySelect('token_hours','Validade padrão de novos tokens',String(plat.token_hours)).replace('<option value="never">Nunca expira</option>','');
+ modal(part==='look'?'Personalização':'Configurações avançadas',keep+fields,async f=>{
+  // The visible fields come after the hidden copies, so getAll()'s last value is the edited one.
+  const v=k=>{const all=f.getAll(k);return all[all.length-1];};
+  const saved=await api('/platform/settings',{method:'PUT',body:{name:v('name'),login_message:v('login_message'),color:v('color'),session_hours:Number(v('session_hours')),max_upload_mb:Number(v('max_upload_mb')),token_hours:Number(v('token_hours'))}});
+  state.platform=saved;applyBranding(saved);toast('Configurações salvas.');
+ },'Salvar');
 }
 function googleDialog(google){
  const current=google.source==='panel';
@@ -257,6 +285,7 @@ boot().catch(()=>showLogin());
 const PERM_MODES={none:[],read:['read'],write:['create','update','delete'],full:['read','create','update','delete']};
 const EXPIRY_CHOICES=[['168','7 dias'],['720','30 dias'],['1440','60 dias'],['2160','90 dias'],['4320','180 dias'],['8760','1 ano'],['never','Nunca expira']];
 function expirySelect(name,label='Validade do token',selected='720'){return `<label>${esc(label)}<select name="${esc(name)}">`+EXPIRY_CHOICES.map(([v,l])=>`<option value="${v}" ${v===selected?'selected':''}>${l}</option>`).join('')+'</select></label>';}
+function defaultExpiry(){return String((state.brand&&state.brand.token_hours)||720);}
 function expiryValue(raw){return raw==='never'?null:Number(raw)||720;}
 function expiryLabel(value){const d=new Date(value);return d.getUTCFullYear()>=9000?'Nunca expira':d.toLocaleDateString();}
 function levelSelect(selected='standard',reach='controle total do ambiente'){return '<label>Nível de acesso<select name="level">'+[['standard','Acesso padrão · permissões por tabela'],['admin','Acesso administrador · '+reach]].map(([v,l])=>`<option value="${v}" ${v===selected?'selected':''}>${l}</option>`).join('')+'</select></label>';}
@@ -289,7 +318,7 @@ function bindModalFields(root){
  }
 }
 function tokenSection(){
- return `<fieldset class="token-block"><legend>Token de acesso</legend><label class="check"><input type="checkbox" name="with_token">Criar um token de API junto com este usuário</label><div class="token-extra" hidden><label>Nome do token<input name="token_name" placeholder="Aplicativo do cliente"></label>${expirySelect('token_hours','Validade do token')}<label>Acesso do token<select name="token_mode">${permissionOptions('same',['same','read','write','full'])}</select></label><p class="help">O token nunca ultrapassa as permissões do usuário acima. O segredo aparece uma única vez.</p></div></fieldset>`;
+ return `<fieldset class="token-block"><legend>Token de acesso</legend><label class="check"><input type="checkbox" name="with_token">Criar um token de API junto com este usuário</label><div class="token-extra" hidden><label>Nome do token<input name="token_name" placeholder="Aplicativo do cliente"></label>${expirySelect('token_hours','Validade do token',defaultExpiry())}<label>Acesso do token<select name="token_mode">${permissionOptions('same',['same','read','write','full'])}</select></label><p class="help">O token nunca ultrapassa as permissões do usuário acima. O segredo aparece uma única vez.</p></div></fieldset>`;
 }
 function tokenScopes(mode,userScopes,role){
  if(mode==='same')return userScopes;
@@ -314,7 +343,7 @@ function tokenDialog(owner,owners){
   :'<label>Usuário responsável<select name="user_id" required>'+(state.org?'':'<option value="">Minha conta global</option>')+owners.filter(u=>u.id!==state.user.id).map(u=>`<option value="${esc(u.id)}">${esc(ownerName(u))}</option>`).join('')+'</select></label><p class="help">O token pertence a '+esc(orgLabel())+' e age com as permissões do usuário escolhido.</p>';
  const global=!owner||(owner.role==='admin'&&!owner.tenant_id)||owner.org_admin;
  const role=owner?owner.role:'admin',ownerScopes=owner?owner.scopes:{};
- modal('Criar token de acesso',field('name','Nome da integração')+ownerField+expirySelect('hours')+(global?levelSelect('standard',owner&&owner.org_admin?'tabelas e registros da organização':undefined):'')+accessModeSelect()+permissionsFields(ownerScopes,'Permissões do token')+'<p class="help">Use permissões mínimas nas aplicações. Nunca coloque um token administrativo no frontend público.</p>',async f=>{
+ modal('Criar token de acesso',field('name','Nome da integração')+ownerField+expirySelect('hours','Validade do token',defaultExpiry())+(global?levelSelect('standard',owner&&owner.org_admin?'tabelas e registros da organização':undefined):'')+accessModeSelect()+permissionsFields(ownerScopes,'Permissões do token')+'<p class="help">Use permissões mínimas nas aplicações. Nunca coloque um token administrativo no frontend público.</p>',async f=>{
   const level=f.get('level')||'standard',mode=f.get('access_mode')||'full';
   const scopes=level==='admin'?{}:mode==='custom'?permissionValues(f):tokenScopes(mode,ownerScopes,role);
   const created=await api('/tokens',{method:'POST',body:{name:f.get('name'),user_id:f.get('user_id')||null,hours:expiryValue(f.get('hours')),scopes:scopes,admin:level==='admin'}});

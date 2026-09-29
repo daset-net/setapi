@@ -277,6 +277,17 @@ Quem recebe:
 
 A inbox precisa pertencer à chave; o SETAPI confere com o provedor ao salvar. A chave fica criptografada no banco e não volta ao navegador. O botão **Enviar teste para mim** manda uma mensagem na hora para o administrador logado. As variáveis `SETAPI_SMTP_*` são legado: continuam funcionando para instalações antigas, e o provedor configurado no painel tem prioridade.
 
+### Configurações da plataforma
+
+Com **Plataforma** no seletor, o administrador global abre **Configurações**:
+
+- **Personalização**: nome da plataforma, mensagem da tela de login e cor principal. O nome aparece no login, na barra lateral, no assunto dos e-mails e no aplicativo autenticador.
+- **Avançado**: duração do login (1 a 720 horas), tamanho máximo de arquivo enviado ao storage (padrão: `SETAPI_MAX_UPLOAD_MB`) e validade sugerida para novos tokens.
+- **E-mail** e **Aplicativo Google** (veja abaixo).
+- **Sistema**: versão, PostgreSQL, Redis, worker, endereço público e origens CORS, que continuam nas variáveis do serviço.
+
+Na API: `GET /api/platform/branding` (público) e `GET`/`PUT /api/platform/settings` (administrador global).
+
 ### Google Drive: conectar com Google
 
 No painel, escolha a organização no seletor e abra **Storage e arquivos → Conectar storage → Google Drive → Conectar Google** (para os backups da plataforma: **Plataforma → Backups → Conectar destino**). O Google abre na hora: quem não está logado informa e-mail e senha; quem já está logado vai direto para a tela de autorização. Ao voltar, o SETAPI cria uma pasta exclusiva, salva o refresh token criptografado e deixa a conexão disponível para arquivos e backups.
