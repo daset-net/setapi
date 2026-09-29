@@ -21,6 +21,7 @@ from .admin_api import router as admin_router
 from .data_api import router as data_router
 from .storage_api import router as storage_router
 from .google_oauth import router as google_router
+from .mail_api import router as mail_router
 from .accounts import router as accounts_router
 from .organizations import router as organizations_router
 from .policies import router as policies_router
@@ -147,6 +148,7 @@ app.include_router(admin_router)
 app.include_router(data_router)
 app.include_router(storage_router)
 app.include_router(google_router)
+app.include_router(mail_router)
 app.include_router(accounts_router)
 app.include_router(organizations_router)
 app.include_router(policies_router)

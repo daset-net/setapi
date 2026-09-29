@@ -14,7 +14,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field, ConfigDict
 from psycopg.types.json import Jsonb
-from . import db, storage
+from . import db, storage, mail
 from .organizations import require_active
 from .security import principal, admin, issue, audit, rate_limit, verify_password, hash_password, DUMMY_HASH, validate_scopes
 
@@ -199,7 +199,7 @@ class EmailRequest(BaseModel):
 
 
 def mail_ready():
-    return bool(os.getenv('SETAPI_SMTP_HOST') and os.getenv('SETAPI_SMTP_FROM'))
+    return mail.ready()
 
 
 @router.post('/auth/forgot-password',status_code=202)
@@ -210,7 +210,7 @@ def forgot(body:EmailRequest,request:Request):
     attempt_limit(request,body.email)
     with db.connection() as conn:
         user=conn.execute('SELECT * FROM setapi.users WHERE email=%s AND active',(body.email.lower(),)).fetchone()
-        if user:queue_email(conn,user,'reset')
+        if user and mail.can_reach(conn,user):queue_email(conn,user,'reset')
     time.sleep(max(0, .25+secrets.randbelow(100)/1000-(time.monotonic()-started)))
     return {'message':'Se a conta estiver cadastrada, você receberá as instruções.'}
 
@@ -240,7 +240,7 @@ def reset(body:Reset,request:Request):
 
 @router.post('/app-auth/register',status_code=202)
 def register(body:Credentials,request:Request):
-    if os.getenv('SETAPI_ALLOW_REGISTRATION','false')!='true' or not mail_ready():
+    if os.getenv('SETAPI_ALLOW_REGISTRATION','false')!='true' or not mail.smtp_ready():
         raise HTTPException(403,'Public registration is disabled')
     if len(body.password)<12 or not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',body.email):
         raise HTTPException(422,'Provide a valid email and password with at least 12 characters')

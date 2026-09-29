@@ -96,7 +96,7 @@ A estrutura e as configurações persistem no PostgreSQL. Reserve espaço tempor
 | `SETAPI_DB_POOL_MAX` | Máximo de conexões por processo, padrão 20 |
 | `SETAPI_WS_MAX` / `SETAPI_HTTP_CONCURRENCY` | Limites por processo, padrão 1000 |
 | `SETAPI_ALLOW_REGISTRATION` | Cadastro público de alunos; desativado por padrão |
-| `SETAPI_SMTP_HOST/PORT/FROM/USER/PASSWORD` | Recuperação/verificação de e-mail; TLS obrigatório |
+| `SETAPI_SMTP_HOST/PORT/FROM/USER/PASSWORD` | Legado. Prefira configurar o e-mail por API no painel, que tem prioridade sobre estas variáveis |
 | `SETAPI_GOOGLE_CLIENT_ID` / `SETAPI_GOOGLE_CLIENT_SECRET` | Aplicativo OAuth do Google usado pelo botão Conectar Google |
 | `SETAPI_STORAGE_HOSTS` | Allowlist de hosts HTTPS para S3 compatível, além de AWS/R2 |
 
@@ -160,7 +160,7 @@ A API aceita `POST /api/organizations` com `{name}`, `PATCH /api/organizations/{
 - `POST /api/auth/forgot-password` e `/api/auth/reset-password`: recuperação; MFA continua obrigatório se ativado.
 - `GET /api/auth/sessions`, `DELETE /api/auth/sessions/{id}`: revogação das próprias sessões.
 
-No painel, crie o usuário como **Aplicativo (aluno)** e atribua permissões e organização. Na tabela, crie campos UUID para proprietário/tenant e configure **Permissões da tabela**. A API preenche esses campos e impede sua substituição pelo aluno. As regras de proprietário e tenant se somam quando ambas estão configuradas. Um aluno não recebe credenciais do PostgreSQL/Redis nem o token administrativo.
+No painel, crie o usuário como **Aplicativo (usuário final)** e atribua permissões e organização. Na tabela, crie campos UUID para proprietário/tenant e configure **Permissões da tabela**. A API preenche esses campos e impede sua substituição pelo aluno. As regras de proprietário e tenant se somam quando ambas estão configuradas. Um aluno não recebe credenciais do PostgreSQL/Redis nem o token administrativo.
 
 A documentação `/docs` e `/openapi.json` agora exige sessão administrativa. A aplicação do aluno deve usar seu próprio frontend; usuários de aplicativo não fazem login no console administrativo.
 
@@ -236,6 +236,23 @@ Configuração S3:
 ```
 
 Para R2, use provedor `r2`, região `auto` e `endpoint_url` como `https://ACCOUNT_ID.r2.cloudflarestorage.com`.
+
+### E-mail por API
+
+O SETAPI envia e-mail só para quem acessa o painel: notificações e recuperação de senha. O administrador global configura em **E-mail**: escolhe o provedor, cola a API key, e o SETAPI lista as inboxes daquela chave para escolher a que envia.
+
+| Provedor | API |
+|---|---|
+| AgentMail | `api.agentmail.to` |
+| OpenMail | `api.openmail.sh` |
+| AGMail | `api.agmail.ai` |
+
+Quem recebe:
+
+- **Administradores do painel**: avisos gerais (backup que falhou, organização que conectou o Google Drive) e recuperação de senha.
+- **Usuários do painel**: avisos da própria organização e recuperação de senha. Organizações desativadas deixam de receber.
+
+A inbox precisa pertencer à chave; o SETAPI confere com o provedor ao salvar. A chave fica criptografada no banco e não volta ao navegador. O botão **Enviar teste para mim** manda uma mensagem na hora para o administrador logado. As variáveis `SETAPI_SMTP_*` são legado: continuam funcionando para instalações antigas, e o provedor configurado no painel tem prioridade.
 
 ### Google Drive: conectar com Google
 

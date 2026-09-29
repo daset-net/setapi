@@ -11,7 +11,7 @@ from psycopg import errors
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
-from . import db, storage
+from . import db, storage, mail
 from .config import settings
 from .security import admin, audit, is_admin, storage_manager
 
@@ -163,6 +163,11 @@ def callback(request: Request, user=Depends(session_manager)):
                 row = conn.execute("INSERT INTO setapi.storages(name,provider,config_encrypted,organization_id) VALUES(%s,'drive',%s,%s) RETURNING id",
                     (config['name'], storage.encrypt(saved), config.get('organization_id'))).fetchone()
             audit(conn, user, 'google.connect', str(row['id']))
+            if config.get('organization_id') and not config['storage_id']:
+                org = conn.execute('SELECT name FROM setapi.organizations WHERE id=%s', (config['organization_id'],)).fetchone()
+                mail.notify_admins(conn, 'Google Drive conectado', f'{org["name"]} conectou o Google Drive ({config["name"]}) usando {user["email"]}.')
+                mail.notify_organization(conn, config['organization_id'], 'Google Drive conectado',
+                    f'O Google Drive ({config["name"]}) foi conectado à {org["name"]} por {user["email"]}. Os arquivos da organização vão para uma pasta exclusiva nesse Drive.')
         return result('connected')
     except (httpx.HTTPError, KeyError, ValueError, errors.UniqueViolation):
         # Never expose authorization codes, tokens or provider response bodies.

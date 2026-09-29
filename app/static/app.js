@@ -2,7 +2,7 @@
 const $ = s => document.querySelector(s);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const state = {user:null, tables:[], page:'overview', table:null, offset:0, filter:'{}', socket:null};
-const titles = {organizations:['Organizações','Dados separados para cada escola, empresa ou cliente.'],security:['Segurança da conta','Senha, autenticação em duas etapas e sessões.'],overview:['Visão geral','Acompanhe as conexões e os recursos do seu backend.'],tables:['Tabelas e API','Estruture seus dados. A API acompanha cada alteração.'],users:['Usuários','Controle quem pode acessar este ambiente.'],tokens:['Tokens de acesso','Permissões explícitas para cada integração.'],storages:['Storage e arquivos','Conecte seus provedores e organize os arquivos.'],backups:['Backups','Cópias criptografadas do banco e das configurações.'],audit:['Atividade','Histórico das operações realizadas pela API.']};
+const titles = {organizations:['Organizações','Dados separados para cada escola, empresa ou cliente.'],security:['Segurança da conta','Senha, autenticação em duas etapas e sessões.'],overview:['Visão geral','Acompanhe as conexões e os recursos do seu backend.'],tables:['Tabelas e API','Estruture seus dados. A API acompanha cada alteração.'],users:['Usuários','Controle quem pode acessar este ambiente.'],tokens:['Tokens de acesso','Permissões explícitas para cada integração.'],storages:['Storage e arquivos','Conecte seus provedores e organize os arquivos.'],backups:['Backups','Cópias criptografadas do banco e das configurações.'],audit:['Atividade','Histórico das operações realizadas pela API.'],mail:['E-mail','Notificações e recuperação de senha para administradores e organizações.']};
 async function api(path, options={}) {
  const headers = {'X-SETAPI-CSRF':'1',...(options.headers||{})};
  if (options.body && !(options.body instanceof FormData)) {headers['Content-Type']='application/json';options.body=JSON.stringify(options.body);}
@@ -35,7 +35,7 @@ async function render(){
  if(state.socket && state.subscribed!==JSON.stringify(state.tables.map(t=>t.name)))connect();
  const [title,description]=titles[state.page];$('#page-title').textContent=title;$('#page-description').textContent=description;$('#breadcrumb').textContent='Workspace / '+title;$('#page-actions').innerHTML='';
  document.querySelectorAll('[data-page]').forEach(b=>b.classList.toggle('active',b.dataset.page===state.page));
- const handlers={overview:overview,tables:tablesPage,users:usersPage,tokens:tokensPage,storages:storagesPage,backups:backupsPage,audit:auditPage,security:securityPage,organizations:organizationsPage};await handlers[state.page]();
+ const handlers={overview:overview,tables:tablesPage,users:usersPage,tokens:tokensPage,storages:storagesPage,backups:backupsPage,audit:auditPage,security:securityPage,organizations:organizationsPage,mail:mailPage};await handlers[state.page]();
 }
 function action(label,fn){const b=document.createElement('button');b.textContent=label;b.onclick=fn;$('#page-actions').append(b);}
 async function overview(){
@@ -70,7 +70,7 @@ function userDialog(organizations,presetOrgId=null){
  modal(org?'Novo usuário em '+org.name:'Novo usuário',
   field('email','E-mail','','email')+field('password','Senha inicial (mínimo 12 caracteres)','','password')
   +'<label>Perfil<select name="role">'+roles.map(([v,l])=>`<option value="${v}">${l}</option>`).join('')+'</select></label>'
-  +'<label>Tipo de usuário<select name="audience"><option value="panel">Painel</option><option value="app">Aplicativo (aluno)</option></select></label>'
+  +'<label>Tipo de usuário<select name="audience"><option value="panel">Painel</option><option value="app">Aplicativo (usuário final)</option></select></label>'
   +header+permissionsFields()+tokenSection(),
   async f=>{
    const scopes=permissionValues(f),role=f.get('role');
@@ -138,6 +138,42 @@ async function backupsPage(){
  $('#content').innerHTML=`<div class="card"><div class="card-head"><h3>Agendamentos</h3><button class="secondary" id="schedule">＋ Agendar</button></div>${schedules.length?table(['DESTINO','INTERVALO','RETENÇÃO','PRÓXIMA EXECUÇÃO',''],schedules.map(s=>`<tr><td>${esc(stores.find(x=>x.id===s.storage_id)?.name||s.storage_id)}</td><td>${s.every_hours} horas</td><td>${s.retention} cópias</td><td>${esc(new Date(s.next_run).toLocaleString())}</td><td><button class="danger" data-unschedule="${esc(s.id)}">Remover</button></td></tr>`)):empty('Sem agendamentos','Configure a frequência e quantas cópias manter.')}</div><div class="card"><div class="card-head"><h3>Histórico de backups</h3><button class="secondary" id="refresh-backups">Atualizar</button></div>${rows.length?table(['DATA','STATUS','TAMANHO','OBJETO / ERRO'],rows.map(r=>`<tr><td>${esc(new Date(r.created_at).toLocaleString())}</td><td>${badge(r.status,r.status==='completed')}</td><td>${r.size?(r.size/1048576).toFixed(2)+' MB':'—'}</td><td title="${esc(r.object_key||r.error)}">${esc(r.object_key||r.error||'Aguardando processamento')}</td></tr>`)):empty('Ainda não há backups','Crie uma cópia manual ou um agendamento.')}</div><div class="card"><h3>Restauração segura</h3><p>Baixe o arquivo .setapi no provedor e use o comando de restauração em um banco vazio. A chave SETAPI_ENCRYPTION_KEY original é necessária para abrir a cópia. Guarde-a fora do servidor.</p><code>python -m app.restore backup.setapi</code><p class="help">O procedimento completo está no README. O painel não substitui o banco em uso.</p></div>`;
  $('#refresh-backups').onclick=()=>render();$('#schedule').onclick=()=>{if(!stores.length)return toast('Conecte um storage da plataforma primeiro. Storages de organizações não recebem backups.');modal('Agendar backups',chooser()+field('every_hours','Intervalo em horas',24,'number')+field('retention','Quantidade de cópias a manter',7,'number')+'<p class="help">As cópias antigas deste agendamento serão excluídas do provedor após novos backups bem-sucedidos.</p>',async f=>{await api('/backup-schedules',{method:'POST',body:{storage_id:f.get('storage_id'),every_hours:Number(f.get('every_hours')),retention:Number(f.get('retention'))}});});};document.querySelectorAll('[data-unschedule]').forEach(b=>b.onclick=async()=>{await api('/backup-schedules/'+b.dataset.unschedule,{method:'DELETE'});await render();});
 }
+async function mailPage(){
+ const [cfg,provs]=await Promise.all([api('/mail/config'),api('/mail/providers')]);
+ const label=id=>(provs.data.find(p=>p.id===id)||{}).label||id;
+ action(cfg.configured?'Alterar e-mail':'＋ Configurar e-mail',()=>mailDialog(cfg,provs.data));
+ const who='<div class="split-row"><span>Administradores que recebem</span><strong>'+(cfg.recipients.length?cfg.recipients.map(esc).join(', '):'—')+'</strong></div>';
+ $('#content').innerHTML='<div class="card">'+(cfg.configured?'<div class="card-head"><h3>Envio ativo</h3>'+badge(label(cfg.provider))+'</div>'+
+  [['Enviado por',cfg.sender],['API key',cfg.key_hint]].map(([k,v])=>`<div class="split-row"><span>${esc(k)}</span><strong>${esc(v)}</strong></div>`).join('')+who+
+  '<div class="toolbar" style="margin:22px 0 0"><button class="secondary" id="mail-test">Enviar teste para mim</button><button class="danger" id="mail-remove">Remover</button></div>'
+  :empty('Nenhum provedor de e-mail','Conecte AgentMail, OpenMail ou AGMail. Basta colar a API key.'))+'</div>'+
+  '<p class="help">Os administradores do painel recebem os avisos gerais (backup que falhou, organização que conectou o Google Drive), e os usuários do painel recebem os avisos da própria organização. Todos recuperam a senha por e-mail.</p>';
+ if(!cfg.configured)return;
+ $('#mail-test').onclick=async e=>{e.target.disabled=true;try{const r=await api('/mail/test',{method:'POST'});toast('Teste enviado para '+r.to+'.');}catch(err){toast(err.message);}finally{e.target.disabled=false;}};
+ $('#mail-remove').onclick=()=>modal('Remover e-mail','<p>O SETAPI deixa de enviar notificações e recuperação de senha para administradores e organizações.</p>',async()=>{await api('/mail/config',{method:'DELETE'});toast('Provedor de e-mail removido.');},'Remover');
+}
+function mailDialog(cfg,provs){
+ modal('Configurar e-mail','<label>Provedor<select name="provider" id="mail-provider">'+provs.map(p=>`<option value="${esc(p.id)}" ${p.id===cfg.provider?'selected':''}>${esc(p.label)}</option>`).join('')+'</select></label>'+
+  '<label>API key<input name="api_key" id="mail-key" type="password" autocomplete="off" spellcheck="false"></label><div id="mail-inboxes"></div><p class="help">A chave é criptografada no banco e nunca volta ao navegador.</p>',
+  async f=>{const r=await api('/mail/config',{method:'PUT',body:{provider:f.get('provider'),api_key:f.get('api_key')||'',inbox_id:f.get('inbox_id')||''}});toast('E-mail configurado: '+r.sender+'.');},'Salvar');
+ const provider=$('#mail-provider'),key=$('#mail-key'),box=$('#mail-inboxes'),submit=$('#modal-submit');let timer,seq=0;
+ const saved=()=>cfg.configured&&provider.value===cfg.provider;
+ async function load(){
+  const current=++seq;submit.hidden=true;
+  if(!key.value.trim()&&!saved()){box.innerHTML='';return;}
+  box.innerHTML='<p class="help">Buscando as inboxes desta chave…</p>';
+  try{
+   const list=(await api('/mail/discover',{method:'POST',body:{provider:provider.value,api_key:key.value.trim()}})).data;
+   if(current!==seq)return;
+   if(!list.length){box.innerHTML='<p class="help">Essa chave ainda não tem nenhuma inbox. Crie uma no provedor e cole a chave de novo.</p>';return;}
+   box.innerHTML='<label>Inbox que envia<select name="inbox_id">'+list.map(i=>`<option value="${esc(i.id)}" ${i.id===cfg.inbox_id?'selected':''}>${esc((i.name?i.name+' — ':'')+i.email)}</option>`).join('')+'</select></label>';
+   submit.hidden=false;
+  }catch(e){if(current===seq)box.innerHTML='<p class="help" style="color:#ad443b">'+esc(e.message)+'</p>';}
+ }
+ const hint=()=>{key.placeholder=saved()?'Deixe vazio para manter a chave atual ('+cfg.key_hint+')':'Cole a API key do provedor';};
+ provider.onchange=()=>{hint();load();};key.oninput=()=>{clearTimeout(timer);timer=setTimeout(load,500);};
+ hint();load();
+}
 async function auditPage(){const rows=(await api('/audit')).data;$('#content').innerHTML='<div class="card">'+(rows.length?table(['DATA','OPERAÇÃO','RECURSO','DETALHES'],rows.map(r=>`<tr><td>${esc(new Date(r.created_at).toLocaleString())}</td><td>${badge(r.action)}</td><td>${esc(r.resource)}</td><td>${esc(JSON.stringify(r.details))}</td></tr>`)):empty('Nenhuma atividade','As próximas operações aparecerão aqui.'))+'</div>';}
 let reconnectTimer, refreshTimer;
 function connect(){clearTimeout(reconnectTimer);if(state.socket){state.socket.onclose=null;state.socket.close();}if(!state.user)return;state.subscribed=JSON.stringify(state.tables.map(t=>t.name));const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');state.socket=ws;ws.onopen=()=>ws.send(JSON.stringify({tables:state.tables.map(t=>t.name)}));ws.onmessage=e=>{const msg=JSON.parse(e.data);if(msg.type==='ready'){$('#live-status').textContent='● Tempo real conectado';if(state.page==='tables')render().catch(()=>{});}if(msg.type==='change'){clearTimeout(refreshTimer);refreshTimer=setTimeout(()=>{if(state.page==='tables')render().catch(e=>toast(e.message));},200);}};ws.onclose=()=>{$('#live-status').textContent='○ Reconectando';if(state.user)reconnectTimer=setTimeout(connect,3000);};}
@@ -178,7 +214,7 @@ function bindModalFields(root){
  }
 }
 function tokenSection(){
- return `<fieldset class="token-block"><legend>Token de acesso</legend><label class="check"><input type="checkbox" name="with_token">Criar um token de API junto com este usuário</label><div class="token-extra" hidden><label>Nome do token<input name="token_name" placeholder="Aplicativo do aluno"></label>${expirySelect('token_hours','Validade do token')}<label>Acesso do token<select name="token_mode">${permissionOptions('same',['same','read','write','full'])}</select></label><p class="help">O token nunca ultrapassa as permissões do usuário acima. O segredo aparece uma única vez.</p></div></fieldset>`;
+ return `<fieldset class="token-block"><legend>Token de acesso</legend><label class="check"><input type="checkbox" name="with_token">Criar um token de API junto com este usuário</label><div class="token-extra" hidden><label>Nome do token<input name="token_name" placeholder="Aplicativo do cliente"></label>${expirySelect('token_hours','Validade do token')}<label>Acesso do token<select name="token_mode">${permissionOptions('same',['same','read','write','full'])}</select></label><p class="help">O token nunca ultrapassa as permissões do usuário acima. O segredo aparece uma única vez.</p></div></fieldset>`;
 }
 function tokenScopes(mode,userScopes,role){
  if(mode==='same')return userScopes;

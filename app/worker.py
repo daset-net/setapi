@@ -56,6 +56,7 @@ def run_backup():
         except Exception as exc:
             log.error('Backup %s failed (%s)', job['id'], type(exc).__name__)
             conn.execute("UPDATE setapi.backups SET status='failed',error=%s,finished_at=now() WHERE id=%s", ('Backup failed: check database client, storage credentials and connectivity', job['id']))
+            mail.notify_admins(conn, 'Backup falhou', f'O backup {job["id"]} falhou. Confira o storage de destino e a conexão com o banco em Backups no painel.')
     return True
 
 
