@@ -251,9 +251,22 @@ function platformDialog(plat,part){
 function googleDialog(google){
  const current=google.source==='panel';
  modal('Aplicativo Google','<div class="steps"><div class="step"><b>1</b><span>No Google Cloud, crie um projeto e ative a API Google Drive.</span></div><div class="step"><b>2</b><span>Configure a tela de consentimento OAuth.</span></div><div class="step"><b>3</b><span>Crie credenciais OAuth do tipo Aplicativo da Web com a URI de redirecionamento abaixo.</span></div></div><div class="secret">'+esc(google.redirect_uri)+'</div>'+
+  '<label>Arquivo JSON baixado do Google Cloud<input type="file" id="google-json" accept=".json,application/json"></label><p class="help" id="google-json-status">Opcional: o arquivo preenche o Client ID e o Client Secret. Ele é lido só neste navegador.</p>'+
   '<label>Client ID<input name="client_id" value="'+esc(current?google.client_id:'')+'" placeholder="000000-xxxx.apps.googleusercontent.com" autocomplete="off" spellcheck="false" required></label>'+
   '<label>Client Secret<input name="client_secret" type="password" autocomplete="off" spellcheck="false" placeholder="'+(current?'Deixe vazio para manter o atual':'Cole o Client Secret')+'" '+(current?'':'required')+'></label>',
   async f=>{await api('/integrations/google/config',{method:'PUT',body:{client_id:f.get('client_id').trim(),client_secret:f.get('client_secret').trim()}});toast('Aplicativo Google configurado.');},'Salvar');
+ $('#google-json').onchange=async e=>{
+  const status=$('#google-json-status'),file=e.target.files[0];if(!file)return;
+  try{
+   // The Google Cloud download wraps the client in "web" (or "installed" for desktop apps).
+   const data=JSON.parse(await file.text()),app=data.web||data.installed||data;
+   if(!app.client_id||!app.client_secret)throw Error('O arquivo não tem client_id e client_secret.');
+   $('#modal-fields [name=client_id]').value=app.client_id;$('#modal-fields [name=client_secret]').value=app.client_secret;
+   const uris=app.redirect_uris||[];
+   status.textContent=uris.includes(google.redirect_uri)?'Arquivo lido. A URI de redirecionamento confere. Clique em Salvar.':'Arquivo lido, mas ele não inclui a URI '+google.redirect_uri+'. Adicione-a no Google Cloud antes de conectar um Drive.';
+   status.classList.toggle('warn',!uris.includes(google.redirect_uri));
+  }catch(err){status.textContent=err instanceof SyntaxError?'Este arquivo não é um JSON válido.':err.message;status.classList.add('warn');}
+ };
 }
 function mailDialog(cfg,provs){
  modal('Configurar e-mail','<label>Provedor<select name="provider" id="mail-provider">'+provs.map(p=>`<option value="${esc(p.id)}" ${p.id===cfg.provider?'selected':''}>${esc(p.label)}</option>`).join('')+'</select></label>'+

@@ -299,7 +299,7 @@ Para o botão funcionar, o administrador global registra o aplicativo Google **u
 1. No Google Cloud, crie um projeto e ative a API Google Drive.
 2. Configure a tela de consentimento OAuth.
 3. Crie credenciais OAuth do tipo **Aplicativo da Web** com a URI de redirecionamento `https://SEU_DOMINIO/api/integrations/google/callback`.
-4. Cole o Client ID e o Client Secret no painel. O Client Secret fica criptografado no banco.
+4. Baixe o JSON das credenciais e escolha-o em **Configurar Google** (ou cole o Client ID e o Client Secret). O arquivo é lido só no navegador; o Client Secret fica criptografado no banco.
 
 Alternativa: defina `SETAPI_GOOGLE_CLIENT_ID` e `SETAPI_GOOGLE_CLIENT_SECRET` e reinicie o serviço. O que estiver salvo no painel vale no lugar dessas variáveis.
 
