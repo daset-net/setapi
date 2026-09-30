@@ -39,8 +39,9 @@ def plan(dump, prefix, folder):
         entry = ENTRY.match(line)
         if not entry:
             raise RestoreError('O backup contém um objeto que não pode ser restaurado.')
-        # Index entries carry the index name; every other kind names its table first.
-        if entry['schema'] != 'data' or (entry['kind'] != 'INDEX' and not entry['name'].startswith(prefix)):
+        # Index entries carry the index name; comments read "COLUMN <table>.<field>"; every other kind names its table first.
+        target = (entry['rest'] or '').split(' ')[0] if entry['kind'] == 'COMMENT' else entry['name']
+        if entry['schema'] != 'data' or (entry['kind'] != 'INDEX' and not target.startswith(prefix)):
             raise RestoreError('O backup contém tabelas que não pertencem a esta organização.')
         # Read policies reference this server's PostgREST roles; they are recreated afterwards.
         if entry['kind'] == 'POLICY' and MANAGED_POLICY.match(entry['rest'] or ''):

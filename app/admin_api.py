@@ -116,6 +116,9 @@ def create_table(body: tables.Table, organization_id: UUID | None = ORG, user=De
             definitions.append(sql.SQL('organization_id uuid REFERENCES setapi.organizations(id) ON DELETE RESTRICT'))
         definitions.extend(tables.column_sql(c, conn, prefix) for c in body.columns)
         conn.execute(sql.SQL('CREATE TABLE data.{} ({})').format(sql.Identifier(physical), sql.SQL(',').join(definitions)))
+        for column in body.columns:
+            if column.type == 'file':
+                tables.mark_file(conn, physical, column.name, column.storage_id)
         readable=['id','created_at','updated_at']+[c.name for c in body.columns]
         writable=[c.name for c in body.columns]
         if body.organization_isolated:
@@ -126,7 +129,7 @@ def create_table(body: tables.Table, organization_id: UUID | None = ORG, user=De
             # The organization's panel users get every field by default; restrict it in the table policy.
             conn.execute('INSERT INTO setapi.policies VALUES(%s,NULL,NULL,%s,%s)',(physical,Jsonb(readable),Jsonb(writable)))
         tables.manage(conn,physical)
-        audit(conn, user, 'table.create', body.name, dict(body.model_dump(), organization_id=str(organization) if organization else None))
+        audit(conn, user, 'table.create', body.name, dict(body.model_dump(mode='json'), organization_id=str(organization) if organization else None))
         tables.event(conn, physical, 'schema', physical)
     return {'name': body.name, 'endpoint': '/api/data/' + body.name, 'organization_id': organization}
 
@@ -138,8 +141,10 @@ def add_column(table: str, body: tables.Column, organization_id: UUID | None = O
         physical = tables.target(conn, user, table, organization_id, structure=True)
         definition = tables.column_sql(body, conn, physical[:12] if physical != table else '')
         conn.execute(sql.SQL('ALTER TABLE data.{} ADD COLUMN {}').format(sql.Identifier(physical), definition))
+        if body.type == 'file':
+            tables.mark_file(conn, physical, body.name, body.storage_id)
         policies.follow_column(conn, physical, None, body.name)
-        audit(conn, user, 'column.create', table, dict(body.model_dump(), organization_id=str(organization_id) if organization_id else None))
+        audit(conn, user, 'column.create', table, dict(body.model_dump(mode='json'), organization_id=str(organization_id) if organization_id else None))
         tables.event(conn, physical, 'schema', physical)
     return {'ok': True}
 
@@ -379,6 +384,7 @@ class ColumnEdit(BaseModel):
     type:str=Field(description='New type, one of: '+', '.join(tables.TYPES)+'. Existing values are converted.')
     nullable:bool=Field(True,description='false makes the field required.')
     confirm:str=Field(description='Must be exactly "table.column", to confirm.')
+    storage_id:UUID|None=Field(None,description='For type file: the storage its files go to; empty uses the default storage.')
 
 
 @router.put('/tables/{table}/columns/{column}')
@@ -392,6 +398,7 @@ def edit_column(table:str,column:str,body:ColumnEdit,organization_id: UUID | Non
         if column not in cols:raise HTTPException(404,'Field not found')
         policies.guard_column(conn,physical,column,column)
         conn.execute(sql.SQL('ALTER TABLE data.{} ALTER COLUMN {} TYPE {} USING {}::{}, ALTER COLUMN {} {} NOT NULL').format(sql.Identifier(physical),sql.Identifier(column),sql.SQL(tables.TYPES[body.type]),sql.Identifier(column),sql.SQL(tables.TYPES[body.type]),sql.Identifier(column),sql.SQL('DROP' if body.nullable else 'SET')))
+        tables.mark_file(conn,physical,column,body.storage_id,file=body.type=='file')
         audit(conn,user,'column.type',table,{'column':column,'type':body.type,'organization_id':str(organization_id) if organization_id else None})
     return {'ok':True}
 

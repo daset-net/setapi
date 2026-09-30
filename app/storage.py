@@ -152,5 +152,5 @@ def get(conn, storage_id, organization=ANY):
     if not row or (organization is not ANY and row['organization_id'] != organization):
         raise HTTPException(404, 'Storage not found')
     adapter = Storage(row['provider'], decrypt(row['config_encrypted']))
-    adapter.organization_id = row['organization_id']
+    adapter.id, adapter.organization_id = row['id'], row['organization_id']
     return adapter

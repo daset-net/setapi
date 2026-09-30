@@ -50,6 +50,8 @@ def test_organization_administrator_restores_a_previous_backup(admin_client, tmp
     headers, _, _ = org_admin(c, a)
     seed(c, a, headers)
     create(c, 'intocada', b)
+    # A file field (marked by a column comment) must survive the restore.
+    c.post('/api/tables/pacientes/columns', headers=headers, json={'name': 'documento', 'type': 'file'})
     vault = tmp_path / 'vault'
     vault.mkdir()
     monkeypatch.setattr(storage.Storage, 'upload', lambda self, path, key, content_type=None: (shutil.copyfile(path, vault / key.replace('/', '_')), key)[1])
@@ -75,6 +77,8 @@ def test_organization_administrator_restores_a_previous_backup(admin_client, tmp
     names = {r['nome'] for r in c.get('/api/data/pacientes', headers=headers).json()['data']}
     assert names == {'José da Silva', 'Ana <Maria> & Cia'}
     assert c.get('/api/data/errada', headers=headers).status_code == 404
+    restored = next(t for t in c.get('/api/tables', headers=headers).json()['data'] if t['name'] == 'pacientes')
+    assert {col['name']: col['type'] for col in restored['columns']}['documento'] == 'file'
     # Change capture still works on the restored table, and the other organization is untouched.
     assert c.post('/api/data/pacientes', headers=headers, json={'nome': 'Depois', 'idade': 1, 'ativo': False}).status_code == 201
     assert c.get('/api/data/intocada', params={'organization_id': b}).status_code == 200
@@ -134,3 +138,45 @@ def test_organization_administrator_manages_storage_and_folders_by_api(admin_cli
     member = c.post('/api/users', json={'email': 'm-' + fid[:6] + '@org.test', 'password': 'Member-password-123', 'tenant_id': a}).json()
     token = c.post('/api/tokens', json={'name': 'm', 'user_id': member['id']}).json()['token']
     assert c.post('/api/folders', headers={'Authorization': 'Bearer ' + token}, json={'storage_id': sid, 'name': 'x'}).status_code == 403
+
+
+def test_default_storage_and_file_fields_in_different_storages(admin_client, monkeypatch):
+    c = admin_client
+    a, b = org(c), org(c)
+    headers, _, _ = org_admin(c, a)
+    other, _, _ = org_admin(c, b)
+    monkeypatch.setattr(storage.Storage, 'upload', lambda self, path, key, content_type=None: key)
+    drive = c.post('/api/storages', headers=headers, json={'name': 'drive', 'provider': 's3', 'config': S3}).json()['id']
+    upload = lambda h=headers, **q: c.post('/api/files', headers=h, params=q, files={'file': ('doc.pdf', b'%PDF', 'application/pdf')})
+    # With a single storage, it is the default.
+    assert upload().json()['storage_id'] == drive
+    r2 = c.post('/api/storages', headers=headers, json={'name': 'r2', 'provider': 's3', 'config': S3}).json()['id']
+    assert upload().status_code == 409
+    assert c.post(f'/api/storages/{r2}/default', headers=headers).status_code == 200
+    assert upload().json()['storage_id'] == r2
+    assert c.post(f'/api/storages/{drive}/default', headers=headers).status_code == 200
+    assert [s['name'] for s in c.get('/api/storages', headers=headers).json()['data'] if s['is_default']] == ['drive']
+    contract = upload().json()
+    photo = upload(storage_id=r2).json()
+    assert contract['storage_id'] == drive and photo['storage_id'] == r2
+    assert {f['id'] for f in c.get('/api/files', headers=headers, params={'storage_id': 'default'}).json()['data']} >= {contract['id']}
+    assert photo['id'] not in {f['id'] for f in c.get('/api/files', headers=headers, params={'storage_id': 'default'}).json()['data']}
+    info = c.get('/api/files/' + photo['id'], headers=headers).json()
+    assert info['storage_name'] == 'r2' and info['download'].endswith('/download')
+    assert c.get('/api/files/' + photo['id'], headers=other).status_code == 404
+    # Each file field keeps its files in its own storage.
+    create(c, 'contratos', a, [{'name': 'cliente', 'type': 'text'}, {'name': 'contrato', 'type': 'file', 'storage_id': drive},
+                               {'name': 'foto', 'type': 'file', 'storage_id': r2}, {'name': 'anexo', 'type': 'file'}])
+    fields = {col['name']: col for col in next(t for t in c.get('/api/tables', headers=headers).json()['data'] if t['name'] == 'contratos')['columns']}
+    assert fields['contrato']['type'] == 'file' and fields['contrato']['storage_id'] == drive and fields['anexo']['storage_id'] is None
+    ok = c.post('/api/data/contratos', headers=headers, json={'cliente': 'Ana', 'contrato': contract['id'], 'foto': photo['id'], 'anexo': photo['id']})
+    assert ok.status_code == 201, ok.text
+    assert c.post('/api/data/contratos', headers=headers, json={'contrato': photo['id']}).status_code == 422
+    foreign = c.post('/api/storages', headers=other, json={'name': 'x', 'provider': 's3', 'config': S3}).json()['id']
+    stranger = upload(h=other, storage_id=foreign).json()
+    assert c.post('/api/data/contratos', headers=headers, json={'anexo': stranger['id']}).status_code == 422
+    assert c.post('/api/data/contratos', headers=headers, json={'anexo': 'nao-e-id'}).status_code == 422
+    # A field can later become a file field tied to one storage.
+    c.post('/api/tables/contratos/columns', headers=headers, json={'name': 'recibo', 'type': 'uuid'})
+    assert c.put('/api/tables/contratos/columns/recibo', headers=headers, json={'type': 'file', 'storage_id': r2, 'confirm': 'contratos.recibo'}).status_code == 200
+    assert c.post('/api/data/contratos', headers=headers, json={'recibo': contract['id']}).status_code == 422

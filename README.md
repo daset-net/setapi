@@ -304,14 +304,20 @@ O administrador da organização gerencia o storage com o **token administrativo
 | Ação | Rota |
 |---|---|
 | Conectar S3 / R2 | `POST /api/storages`, `POST /api/integrations/cloudflare/connect` |
-| Listar arquivos | `GET /api/files?storage_id=…&folder_id=…` (ou `&root=true`) |
-| Enviar arquivo | `POST /api/files/{storage_id}?folder_id=…` (multipart, campo `file`) |
+| Definir o storage padrão | `POST /api/storages/{id}/default` |
+| Listar arquivos | `GET /api/files?storage_id=…&folder_id=…` (ou `&root=true`; `storage_id=default` = o padrão) |
+| Enviar arquivo | `POST /api/files` (vai para o padrão; `?storage_id=…` escolhe outro) ou `POST /api/files/{storage_id}`, com `?folder_id=…` (multipart, campo `file`) |
+| Dados de um arquivo | `GET /api/files/{id}` (nome, tamanho, pasta, storage e link de download) |
 | Renomear / mover arquivo | `PATCH /api/files/{id}` com `name` e/ou `folder_id` (`null` = início) |
 | Apagar arquivo | `DELETE /api/files/{id}` |
 | Listar pastas | `GET /api/folders?storage_id=…` (todas; ou `parent_id=…`, `root=true`) |
 | Criar pasta | `POST /api/folders` com `storage_id`, `name`, `parent_id` |
 | Renomear / mover pasta | `PATCH /api/folders/{id}` com `name` e/ou `parent_id` |
 | Apagar pasta | `DELETE /api/folders/{id}` (vazia) ou `?recursive=true` (com tudo dentro, inclusive no provedor) |
+
+**Storage padrão:** cada organização (e a plataforma) marca um storage como padrão em Storage e arquivos. Ele recebe os envios que não informam `storage_id` (ou informam `default`). Com um storage só, ele já é o padrão.
+
+**Campos de arquivo:** nas tabelas, o tipo `file` guarda o id de um arquivo enviado. Cada campo pode ter o próprio storage (`storage_id` na criação do campo): por exemplo, `contrato` no Google Drive e `foto` no Cloudflare R2; sem storage, usa o padrão. O SETAPI recusa arquivos de outra organização e, se o campo tiver storage próprio, arquivos de outro storage. No painel, o formulário do registro envia o arquivo direto para o storage do campo. Pela API: envie o arquivo em `POST /api/files?storage_id=…`, depois grave o `id` devolvido no campo.
 
 As pastas são do SETAPI, não do provedor: renomear e mover são instantâneos e iguais para Drive, R2 e S3.
 

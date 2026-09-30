@@ -29,7 +29,7 @@ def name_taken(conn, organization_id, name, exclude=None):
 @router.get('/storages')
 def list_storages(user=Depends(storage_manager)):
     with db.connection() as conn:
-        return {'data': conn.execute('SELECT id,name,provider,organization_id,created_at FROM setapi.storages WHERE %s OR organization_id=%s ORDER BY name',
+        return {'data': conn.execute('SELECT id,name,provider,organization_id,is_default,created_at FROM setapi.storages WHERE %s OR organization_id=%s ORDER BY name',
                                      (is_admin(user), user.get('tenant_id'))).fetchall()}
 
 
@@ -85,13 +85,48 @@ def visible_files(user):
     return 'owner_id=%s AND organization_id IS NOT DISTINCT FROM %s', (user['id'], user.get('tenant_id'))
 
 
+STORAGE_CHOICE = 'A storage connection id, or "default" for the default storage of the organization.'
+
+
+def pick_storage(conn, user, value, organization_id=None):
+    """Resolve a storage id or "default": the one marked as default, or the only connection there is."""
+    scope = storage.scope(user)
+    if value not in (None, '', 'default'):
+        try:
+            return storage.get(conn, UUID(str(value)), scope).id
+        except ValueError:
+            raise HTTPException(422, STORAGE_CHOICE)
+    owner = organization_id if scope is storage.ANY else scope
+    rows = conn.execute('SELECT id,is_default FROM setapi.storages WHERE organization_id IS NOT DISTINCT FROM %s ORDER BY is_default DESC,created_at', (owner,)).fetchall()
+    if not rows:
+        raise HTTPException(409, 'Nenhum storage conectado. Conecte um em Storage e arquivos.')
+    if not rows[0]['is_default'] and len(rows) > 1:
+        raise HTTPException(409, 'Há mais de um storage e nenhum é o padrão. Defina o padrão ou informe storage_id.')
+    return rows[0]['id']
+
+
+@router.post('/storages/{storage_id}/default')
+def set_default_storage(storage_id: UUID, user=Depends(storage_manager)):
+    """Make this connection the default storage of its organization (or of the platform)."""
+    with db.connection() as conn:
+        chosen = storage.get(conn, storage_id, storage.scope(user))
+        conn.execute('UPDATE setapi.storages SET is_default=false WHERE organization_id IS NOT DISTINCT FROM %s AND is_default', (chosen.organization_id,))
+        conn.execute('UPDATE setapi.storages SET is_default=true WHERE id=%s', (storage_id,))
+        audit(conn, user, 'storage.default', str(storage_id))
+    return {'id': storage_id, 'is_default': True}
+
+
 @router.get('/files')
-def list_files(storage_id: UUID | None = Query(None, description='Only files of this storage connection.'),
+def list_files(storage_id: str | None = Query(None, description='Only files of this storage: its id, or "default".'),
+               organization_id: UUID | None = Query(None, description='With storage_id=default: whose default storage; administrators only.'),
                folder_id: UUID | None = Query(None, description='Only files inside this folder.'),
                root: bool = Query(False, description='Only files outside any folder (with storage_id).'),
                limit: int = Query(200, ge=1, le=1000), offset: int = Query(0, ge=0), user=Depends(principal)):
     where, params = visible_files(user)
     clauses, values = [where], list(params)
+    if storage_id:
+        with db.connection() as conn:
+            storage_id = pick_storage(conn, user, storage_id, organization_id)
     for column, value in (('storage_id', storage_id), ('folder_id', folder_id)):
         if value is not None:
             clauses.append(column + '=%s')
@@ -123,7 +158,7 @@ def folder_name(value):
 
 
 class FolderCreate(BaseModel):
-    storage_id: UUID
+    storage_id: str = Field(description=STORAGE_CHOICE)
     name: str = Field(max_length=255)
     parent_id: UUID | None = Field(None, description='Parent folder; omit for the top level of the storage.')
 
@@ -134,12 +169,12 @@ class FolderUpdate(BaseModel):
 
 
 @router.get('/folders')
-def list_folders(storage_id: UUID = Query(description='Storage connection.'),
+def list_folders(storage_id: str = Query(description=STORAGE_CHOICE),
                  parent_id: UUID | None = Query(None, description='Only direct children of this folder.'),
                  root: bool = Query(False, description='Only top-level folders.'), user=Depends(storage_manager)):
     """Folders of a storage connection. Without filters, every folder, to build the tree."""
     with db.connection() as conn:
-        storage.get(conn, storage_id, storage.scope(user))
+        storage_id = pick_storage(conn, user, storage_id)
         clauses, values = ['storage_id=%s'], [storage_id]
         if parent_id:
             clauses.append('parent_id=%s'); values.append(parent_id)
@@ -152,6 +187,7 @@ def list_folders(storage_id: UUID = Query(description='Storage connection.'),
 def create_folder(body: FolderCreate, user=Depends(storage_manager)):
     name = folder_name(body.name)
     with db.connection() as conn:
+        body.storage_id = pick_storage(conn, user, body.storage_id)
         adapter = storage.get(conn, body.storage_id, storage.scope(user))
         if body.parent_id:
             visible_folder(conn, user, body.parent_id, body.storage_id)
@@ -240,6 +276,22 @@ def update_file(file_id: UUID, body: FileUpdate, user=Depends(storage_manager)):
 @router.post('/files/{storage_id}', status_code=201)
 def upload_file(storage_id: UUID, file: UploadFile, folder_id: UUID | None = Query(None, description='Folder of this storage to put the file in.'),
                 user=Depends(storage_manager)):
+    """Upload into this storage connection."""
+    return store_file(storage_id, file, folder_id, user)
+
+
+@router.post('/files', status_code=201)
+def upload_to_default(file: UploadFile, storage_id: str = Query('default', description=STORAGE_CHOICE),
+                      folder_id: UUID | None = Query(None, description='Folder of that storage to put the file in.'),
+                      organization_id: UUID | None = Query(None, description='With storage_id=default: whose default storage; administrators only.'),
+                      user=Depends(storage_manager)):
+    """Upload into the default storage, or into the one named by storage_id."""
+    with db.connection() as conn:
+        chosen = pick_storage(conn, user, storage_id, organization_id)
+    return store_file(chosen, file, folder_id, user)
+
+
+def store_file(storage_id, file, folder_id, user):
     # Panel users and organization administrators upload, only into their organization's storage; app tokens never do.
     with db.connection() as conn:
         adapter = storage.get(conn, storage_id, storage.scope(user))
@@ -261,7 +313,7 @@ def upload_file(storage_id: UUID, file: UploadFile, folder_id: UUID | None = Que
         key = adapter.upload(path, 'uploads/' + str(file_id), file.content_type or 'application/octet-stream')
         with db.connection() as conn:
             row = conn.execute('''INSERT INTO setapi.files(id,storage_id,owner_id,name,object_key,content_type,size,organization_id,folder_id)
-                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id,name,size,folder_id''',
+                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id,storage_id,name,size,folder_id''',
                 (file_id, storage_id, user['id'], Path(file.filename or 'file').name[:255], key,
                  file.content_type or 'application/octet-stream', size, adapter.organization_id, folder_id)).fetchone()
             audit(conn, user, 'file.upload', str(file_id))
@@ -276,6 +328,19 @@ def upload_file(storage_id: UUID, file: UploadFile, folder_id: UUID | None = Que
     finally:
         os.unlink(path)
         file.file.close()
+
+
+@router.get('/files/{file_id}')
+def file_info(file_id: UUID, user=Depends(principal)):
+    """Name, size, folder and storage of a file, for example the one a file field points to."""
+    where, params = visible_files(user)
+    with db.connection() as conn:
+        row = conn.execute('''SELECT f.id,f.storage_id,s.name AS storage_name,s.provider,f.folder_id,f.name,f.size,f.content_type,f.created_at
+            FROM setapi.files f JOIN setapi.storages s ON s.id=f.storage_id WHERE f.id=%s AND ''' + where.replace('organization_id', 'f.organization_id').replace('owner_id', 'f.owner_id'),
+                           (file_id, *params)).fetchone()
+    if not row:
+        raise HTTPException(404, 'File not found')
+    return {**row, 'download': f'/api/files/{file_id}/download'}
 
 
 @router.get('/files/{file_id}/download')

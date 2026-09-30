@@ -1,11 +1,14 @@
 import re
+from uuid import UUID
 from fastapi import HTTPException
 from psycopg import sql
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field, ConfigDict
 
 TYPES = {'text': 'text', 'integer': 'bigint', 'decimal': 'numeric', 'boolean': 'boolean',
-         'datetime': 'timestamptz', 'date': 'date', 'uuid': 'uuid', 'json': 'jsonb'}
+         'datetime': 'timestamptz', 'date': 'date', 'uuid': 'uuid', 'json': 'jsonb', 'file': 'uuid'}
+# A file field is a uuid column pointing at setapi.files, marked by its comment: "setapi:file" or "setapi:file:<storage id>".
+FILE_MARK = 'setapi:file'
 RESERVED = {'id', 'created_at', 'updated_at'}
 
 
@@ -91,6 +94,7 @@ class Column(BaseModel):
     nullable: bool = Field(True, description='false makes the field required.')
     unique: bool = Field(False, description='true rejects repeated values.')
     references: str | None = Field(None, description='Name of another table; links to its id. Requires type uuid.')
+    storage_id: UUID | None = Field(None, description='For type file: the storage connection its files go to; empty uses the default storage.')
 
 
 class Table(BaseModel):
@@ -133,7 +137,7 @@ def columns(conn, table):
     rows = conn.execute("""SELECT a.attname AS name,
       CASE t.typname WHEN 'bool' THEN 'boolean' WHEN 'int8' THEN 'bigint' WHEN 'timestamptz' THEN 'timestamp with time zone'
       ELSE t.typname END AS type, NOT a.attnotnull AS nullable,
-      pg_get_expr(d.adbin,d.adrelid) AS default_value
+      pg_get_expr(d.adbin,d.adrelid) AS default_value, col_description(c.oid,a.attnum) AS comment
       FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid
       JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_type t ON t.oid=a.atttypid
       LEFT JOIN pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum
@@ -141,7 +145,24 @@ def columns(conn, table):
       ORDER BY a.attnum""", (table,)).fetchall()
     if not rows:
         raise HTTPException(404, 'Table not found')
+    for row in rows:
+        comment = row.pop('comment') or ''
+        if row['type'] == 'uuid' and comment.startswith(FILE_MARK):
+            row['type'] = 'file'
+            row['storage_id'] = comment[len(FILE_MARK) + 1:] or None
     return rows
+
+
+def mark_file(conn, table, column, storage_id=None, file=True):
+    """Mark (or unmark) a uuid column as a file field, optionally tied to one storage of the table's organization."""
+    if file and storage_id:
+        prefix = table[:12] if PREFIXED.match(table) else ''
+        found = conn.execute('''SELECT 1 FROM setapi.storages s LEFT JOIN setapi.organizations o ON o.id=s.organization_id
+            WHERE s.id=%s AND COALESCE(o.table_prefix,'')=%s''', (storage_id, prefix)).fetchone()
+        if not found:
+            raise HTTPException(422, 'Storage not found for this table')
+    mark = (FILE_MARK + (':' + str(storage_id) if storage_id else '')) if file else None
+    conn.execute(sql.SQL('COMMENT ON COLUMN data.{}.{} IS {}').format(sql.Identifier(table), sql.Identifier(column), sql.Literal(mark)))
 
 
 def values(conn, table, body):
@@ -150,13 +171,31 @@ def values(conn, table, body):
         raise HTTPException(413,'Record fields must fit within 64 KiB; use file storage for larger content')
     if not body or len(body) > 100:
         raise HTTPException(422, 'Provide between 1 and 100 fields')
-    cols = {c['name']: c['type'] for c in columns(conn, table)}
+    described = {c['name']: c for c in columns(conn, table)}
+    cols = {name: c['type'] for name, c in described.items()}
     result = {}
     for key, value in body.items():
         if key in RESERVED or key not in cols:
             raise HTTPException(422, f'Unknown or read-only field: {key}')
+        if cols[key] == 'file' and value is not None:
+            check_file(conn, table, key, value, described[key].get('storage_id'))
         result[key] = Jsonb(value) if cols[key] == 'jsonb' else value
     return result
+
+
+def check_file(conn, table, field, value, storage_id):
+    """A file field holds the id of a file of the same organization (and of its storage, when the field names one)."""
+    try:
+        value = UUID(str(value))
+    except ValueError:
+        raise HTTPException(422, f'{field}: use the id of an uploaded file')
+    prefix = table[:12] if PREFIXED.match(table) else None
+    row = conn.execute('''SELECT f.storage_id FROM setapi.files f LEFT JOIN setapi.organizations o ON o.id=f.organization_id
+        WHERE f.id=%s AND (%s::text IS NULL OR o.table_prefix=%s)''', (value, prefix, prefix)).fetchone()
+    if not row:
+        raise HTTPException(422, f'{field}: file not found in this organization')
+    if storage_id and str(row['storage_id']) != str(storage_id):
+        raise HTTPException(422, f'{field}: this field keeps its files in another storage')
 
 
 def event(conn, table, operation, record_id):

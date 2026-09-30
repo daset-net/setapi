@@ -158,3 +158,6 @@ CREATE TABLE IF NOT EXISTS setapi.folders (
 CREATE UNIQUE INDEX IF NOT EXISTS folders_name_idx ON setapi.folders(storage_id,COALESCE(parent_id,'00000000-0000-0000-0000-000000000000'::uuid),lower(name));
 ALTER TABLE setapi.files ADD COLUMN IF NOT EXISTS folder_id uuid REFERENCES setapi.folders(id) ON DELETE RESTRICT;
 CREATE INDEX IF NOT EXISTS files_folder_idx ON setapi.files(storage_id,folder_id);
+-- One default storage per organization (and one for the platform): used when the API names no storage.
+ALTER TABLE setapi.storages ADD COLUMN IF NOT EXISTS is_default boolean NOT NULL DEFAULT false;
+CREATE UNIQUE INDEX IF NOT EXISTS storages_default_idx ON setapi.storages(COALESCE(organization_id,'00000000-0000-0000-0000-000000000000'::uuid)) WHERE is_default;
