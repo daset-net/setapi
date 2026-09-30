@@ -180,3 +180,66 @@ def test_default_storage_and_file_fields_in_different_storages(admin_client, mon
     c.post('/api/tables/contratos/columns', headers=headers, json={'name': 'recibo', 'type': 'uuid'})
     assert c.put('/api/tables/contratos/columns/recibo', headers=headers, json={'type': 'file', 'storage_id': r2, 'confirm': 'contratos.recibo'}).status_code == 200
     assert c.post('/api/data/contratos', headers=headers, json={'recibo': contract['id']}).status_code == 422
+
+
+def wipe(organization):
+    """Remove every trace of an organization, as if the package went to a brand-new server."""
+    with db.connection() as conn:
+        prefix = conn.execute('SELECT table_prefix FROM setapi.organizations WHERE id=%s', (organization,)).fetchone()['table_prefix']
+        for row in conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='data' AND starts_with(table_name,%s)", (prefix,)).fetchall():
+            conn.execute(f'DROP TABLE data."{row["table_name"]}" CASCADE')
+        conn.execute('DELETE FROM setapi.policies WHERE starts_with(table_name,%s)', (prefix,))
+        for table in ('files', 'folders', 'schedules', 'restores', 'backups'):
+            conn.execute(f'DELETE FROM setapi.{table} WHERE organization_id=%s', (organization,))
+        conn.execute('DELETE FROM setapi.storages WHERE organization_id=%s', (organization,))
+        users = [r['id'] for r in conn.execute('SELECT id FROM setapi.users WHERE tenant_id=%s', (organization,)).fetchall()]
+        conn.execute('DELETE FROM setapi.tokens WHERE user_id=ANY(%s)', (users,))
+        conn.execute('DELETE FROM setapi.action_tokens WHERE user_id=ANY(%s)', (users,))
+        conn.execute('DELETE FROM setapi.users WHERE id=ANY(%s)', (users,))
+        conn.execute('DELETE FROM setapi.organizations WHERE id=%s', (organization,))
+
+
+def test_organization_moves_to_another_server_with_a_package(admin_client, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    c = admin_client
+    a = org(c)
+    headers, credentials, _ = org_admin(c, a)
+    monkeypatch.setattr(storage.Storage, 'upload', lambda self, path, key, content_type=None: key)
+    sid = c.post('/api/storages', headers=headers, json={'name': 'r2', 'provider': 's3', 'config': {**S3, 'bucket': 'migra'}}).json()['id']
+    top = c.post('/api/folders', headers=headers, json={'storage_id': sid, 'name': 'Contratos'}).json()
+    c.post('/api/folders', headers=headers, json={'storage_id': sid, 'name': '2026', 'parent_id': top['id']})
+    doc = c.post('/api/files', headers=headers, params={'folder_id': top['id']}, files={'file': ('c.pdf', b'%PDF', 'application/pdf')}).json()
+    seed(c, a, headers)
+    c.post('/api/tables/pacientes/columns', headers=headers, json={'name': 'contrato', 'type': 'file', 'storage_id': sid})
+    patient = c.get('/api/data/pacientes', headers=headers).json()['data'][0]
+    assert c.patch('/api/data/pacientes/' + patient['id'], headers=headers, json={'contrato': doc['id']}).status_code == 200
+    assert c.post(f'/api/organizations/{a}/package', data={'passphrase': 'curta'}).status_code == 422
+    package = c.post(f'/api/organizations/{a}/package', data={'passphrase': 'senha-do-pacote-123'})
+    assert package.status_code == 200 and package.headers['content-disposition'].endswith('.setapi-org"')
+    assert b'migra' not in package.content and credentials['email'].encode() not in package.content
+    upload = lambda secret: c.post('/api/organizations/import', data={'passphrase': secret}, files={'file': ('o.setapi-org', package.content)})
+    # While the organization still exists here, nothing is imported.
+    assert upload('senha-do-pacote-123').status_code == 409
+    wipe(a)
+    assert upload('senha-errada-000000').status_code == 422
+    assert c.post('/api/organizations/import', data={'passphrase': 'senha-do-pacote-123'}, files={'file': ('x', b'qualquer coisa')}).status_code == 422
+    done = upload('senha-do-pacote-123')
+    assert done.status_code == 201, done.text
+    assert done.json()['id'] == a and done.json()['tables'] == 1 and done.json()['files'] == 1
+    # Same password, same records, file field, folders and storage credentials.
+    # No lifespan: the app, database pool included, is shared with the other tests.
+    fresh = TestClient(app)
+    fresh.headers.update({'Origin': 'http://testserver', 'X-SETAPI-CSRF': '1'})
+    if True:
+        assert fresh.post('/api/auth/login', json=credentials).status_code == 200
+        rows = fresh.get('/api/data/pacientes').json()['data']
+        assert {r['nome'] for r in rows} == {'José da Silva', 'Ana <Maria> & Cia'}
+        assert next(r for r in rows if r['id'] == patient['id'])['contrato'] == doc['id']
+        assert fresh.get('/api/files/' + doc['id']).json()['folder_id'] == top['id']
+        assert sorted(f['name'] for f in fresh.get('/api/folders', params={'storage_id': 'default'}).json()['data']) == ['2026', 'Contratos']
+        created = fresh.post('/api/data/pacientes', json={'nome': 'Novo', 'idade': 2, 'ativo': True})
+        assert created.status_code == 201, created.text
+    with db.connection() as conn:
+        config = storage.decrypt(conn.execute('SELECT config_encrypted FROM setapi.storages WHERE id=%s', (sid,)).fetchone()['config_encrypted'])
+    assert config['bucket'] == 'migra'

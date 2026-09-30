@@ -321,6 +321,17 @@ O administrador da organização gerencia o storage com o **token administrativo
 
 As pastas são do SETAPI, não do provedor: renomear e mover são instantâneos e iguais para Drive, R2 e S3.
 
+### Mudar uma organização de servidor
+
+Em **Plataforma → Organizações**, **↓ Exportar** gera um pacote `.setapi-org` protegido por uma senha que você escolhe (mínimo 12 caracteres; o SETAPI não a guarda). No servidor novo, **↑ Importar organização** com o pacote e a mesma senha.
+
+- O pacote leva as tabelas com todos os registros, as permissões das tabelas, os usuários com as senhas atuais e a autenticação em duas etapas, as conexões de storage com as credenciais, as pastas, a lista de arquivos e os agendamentos de backup. Tokens de API não vão: crie novos no servidor novo.
+- Os arquivos continuam no Drive, R2 ou S3; o servidor novo usa as mesmas conexões.
+- Tudo mantém os mesmos ids, então registros, campos de arquivo e usuários continuam ligados. Se a organização, o prefixo das tabelas, algum usuário (id ou e-mail), storage, pasta ou arquivo já existir no destino, nada é importado.
+- Diferente do backup, o pacote não depende da `SETAPI_ENCRYPTION_KEY`: abre em qualquer servidor com a senha.
+- Importe só pacotes que você mesmo exportou: a importação cria tabelas no banco de dados. O limite de tamanho é `SETAPI_IMPORT_MAX_MB` (4096 por padrão; ajuste também o proxy).
+- Na API (administrador global): `POST /api/organizations/{id}/package` (campo `passphrase`) e `POST /api/organizations/import` (campos `file` e `passphrase`).
+
 ### Exportar dados
 
 **Exportar dados** (administrador da organização, ou o global dentro dela) baixa todos os registros de todas as tabelas da organização, ou de uma só: **XLSX** (uma aba por tabela), **CSV** (um `.csv` por tabela num `.zip`, UTF-8 com BOM para o Excel) ou **JSON** (um arquivo, tipos preservados). Na API: `GET /api/export?format=xlsx|csv|json&table=…`.

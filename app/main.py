@@ -30,6 +30,7 @@ from .policies import router as policies_router
 from .platform_settings import router as platform_router
 from .cloudflare_r2 import router as cloudflare_router
 from .export import router as export_router
+from .org_package import router as package_router
 from . import platform_settings
 from . import policies
 from fastapi.exceptions import RequestValidationError
@@ -64,8 +65,13 @@ class BodyLimitMiddleware:
     async def __call__(self, scope, receive, send):
         if scope['type'] != 'http':
             return await self.app(scope, receive, send)
-        upload = scope['path'].startswith('/api/files/') and scope['method'] == 'POST'
-        limit = upload_limit(scope['path']) if upload or scope['path'] == '/mcp' else 1024 * 1024
+        path = scope['path']
+        upload = scope['method'] == 'POST' and (path == '/api/files' or path.startswith('/api/files/'))
+        if scope['method'] == 'POST' and path == '/api/organizations/import':
+            # An organization package carries its whole database.
+            limit = int(os.environ.get('SETAPI_IMPORT_MAX_MB', '4096')) * 1024 * 1024
+        else:
+            limit = upload_limit(path) if upload or path == '/mcp' else 1024 * 1024
         consumed = 0
 
         async def bounded_receive():
@@ -168,6 +174,7 @@ app.include_router(policies_router)
 app.include_router(platform_router)
 app.include_router(cloudflare_router)
 app.include_router(export_router)
+app.include_router(package_router)
 
 
 @app.websocket('/ws')
