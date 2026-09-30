@@ -297,6 +297,24 @@ Na API: `GET /api/platform/branding` (público) e `GET`/`PUT /api/platform/setti
 - **Pontos de restauração**: cada backup concluído da organização tem **↺ Restaurar**. O worker primeiro salva o estado atual como backup "Antes da restauração"; depois, numa única transação (`psql --single-transaction`), apaga as tabelas atuais da organização e recria as do ponto escolhido, com registros, campos, índices e permissões. Se algo falhar, nada muda. O arquivo precisa ser daquela organização e conter só tabelas dela.
 - Na API: `organization_id` em `POST /api/backups` e `POST /api/backup-schedules`; `GET /api/backups?organization_id=…` ou `?all=true`; `POST /api/backups/{id}/restore` e `GET /api/restores`.
 
+### Arquivos e pastas pela API
+
+O administrador da organização gerencia o storage com o **token administrativo** dele, não só pelo painel (tokens de membros continuam sem acesso). O Google Drive é a exceção: conectar exige o navegador, porque o Google pede o login da conta.
+
+| Ação | Rota |
+|---|---|
+| Conectar S3 / R2 | `POST /api/storages`, `POST /api/integrations/cloudflare/connect` |
+| Listar arquivos | `GET /api/files?storage_id=…&folder_id=…` (ou `&root=true`) |
+| Enviar arquivo | `POST /api/files/{storage_id}?folder_id=…` (multipart, campo `file`) |
+| Renomear / mover arquivo | `PATCH /api/files/{id}` com `name` e/ou `folder_id` (`null` = início) |
+| Apagar arquivo | `DELETE /api/files/{id}` |
+| Listar pastas | `GET /api/folders?storage_id=…` (todas; ou `parent_id=…`, `root=true`) |
+| Criar pasta | `POST /api/folders` com `storage_id`, `name`, `parent_id` |
+| Renomear / mover pasta | `PATCH /api/folders/{id}` com `name` e/ou `parent_id` |
+| Apagar pasta | `DELETE /api/folders/{id}` (vazia) ou `?recursive=true` (com tudo dentro, inclusive no provedor) |
+
+As pastas são do SETAPI, não do provedor: renomear e mover são instantâneos e iguais para Drive, R2 e S3.
+
 ### Exportar dados
 
 **Exportar dados** (administrador da organização, ou o global dentro dela) baixa todos os registros de todas as tabelas da organização, ou de uma só: **XLSX** (uma aba por tabela), **CSV** (um `.csv` por tabela num `.zip`, UTF-8 com BOM para o Excel) ou **JSON** (um arquivo, tipos preservados). Na API: `GET /api/export?format=xlsx|csv|json&table=…`.

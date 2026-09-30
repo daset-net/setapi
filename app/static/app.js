@@ -31,7 +31,7 @@ function switcher(){
  $('#org-select').onchange=e=>chooseOrg(e.target.value||null);
 }
 async function chooseOrg(id){
- state.org=id;saveOrg(id);state.table=null;state.offset=0;state.search='';state.searchField='';
+ state.org=id;saveOrg(id);state.table=null;state.browse=null;state.offset=0;state.search='';state.searchField='';
  fitPage();
  await render().catch(e=>toast(e.message));connect();
 }
@@ -209,14 +209,43 @@ function storageActions(){
  document.querySelectorAll('[data-reconnect]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{const data=await api('/integrations/google/connect',{method:'POST',body:{storage_id:b.dataset.reconnect}});window.location.assign(data.url);}catch(e){toast(e.message);b.disabled=false;}});
  document.querySelectorAll('[data-test]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{await api('/storages/'+b.dataset.test+'/test',{method:'POST'});toast('Conexão validada.');}catch(e){toast(e.message);}finally{b.disabled=false;}});
 }
+// File browser: folders are virtual, so renaming and moving are instant for every provider.
 async function storagesPage(){
  action('＋ Conectar storage',()=>storageDialog().catch(e=>toast(e.message)));
  const own=s=>state.user.admin?(state.org?s.organization_id===state.org:!s.organization_id):true;
- const stores=(await api('/storages')).data.filter(own),ids=new Set(stores.map(s=>s.id)),files=(await api('/files')).data.filter(f=>ids.has(f.storage_id));
- $('#content').innerHTML='<div class="card"><h3>Provedores conectados</h3>'+(stores.length?table(['NOME','PROVEDOR',''],stores.map(s=>`<tr><td>${esc(s.name)}</td><td>${badge(s.provider.toUpperCase())}</td><td>${s.provider==='drive'?`<button class="secondary" data-reconnect="${esc(s.id)}">Reconectar com Google</button>`:''}<button class="secondary" data-test="${esc(s.id)}">Testar conexão</button><button class="secondary" data-upload="${esc(s.id)}">Enviar arquivo</button><button class="danger" data-remove-storage="${esc(s.id)}">Remover</button></td></tr>`)):empty('Conecte seu primeiro storage','S3, Cloudflare R2 ou Google Drive.'))+'</div><div class="card"><h3>Arquivos</h3>'+(files.length?table(['ARQUIVO','TAMANHO',''],files.map(f=>`<tr><td>${esc(f.name)}</td><td>${(f.size/1024).toFixed(1)} KB</td><td><a href="/api/files/${esc(f.id)}/download">Baixar ↓</a> <button class="danger" data-remove-file="${esc(f.id)}">Excluir</button></td></tr>`)):empty('Nenhum arquivo enviado','Os arquivos ficam privados no provedor escolhido.'))+'</div>';
+ const stores=(await api('/storages')).data.filter(own);
+ const nav=state.browse=state.browse&&stores.some(s=>s.id===state.browse.storage)?state.browse:{storage:stores[0]?.id||null,folder:null};
+ const providers='<div class="card"><h3>Provedores conectados</h3>'+(stores.length?table(['NOME','PROVEDOR',''],stores.map(s=>`<tr><td>${esc(s.name)}</td><td>${badge(s.provider.toUpperCase())}</td><td class="row-actions">${s.provider==='drive'?`<button class="secondary" data-reconnect="${esc(s.id)}">Reconectar com Google</button>`:''}<button class="secondary" data-test="${esc(s.id)}">Testar conexão</button><button class="danger" data-remove-storage="${esc(s.id)}">Remover</button></td></tr>`)):empty('Conecte seu primeiro storage','Google Drive, Cloudflare R2 ou S3.'))+'</div>';
+ if(!nav.storage){$('#content').innerHTML=providers;storageActions();return;}
+ const [folders,files]=await Promise.all([api('/folders?storage_id='+nav.storage),api('/files?storage_id='+nav.storage+(nav.folder?'&folder_id='+nav.folder:'&root=true')+'&limit=1000')]).then(r=>r.map(x=>x.data));
+ const byId=Object.fromEntries(folders.map(f=>[f.id,f]));
+ if(nav.folder&&!byId[nav.folder])nav.folder=null;
+ const path=id=>{const out=[];for(let f=byId[id];f;f=byId[f.parent_id])out.unshift(f);return out;};
+ const label=id=>id?path(id).map(f=>f.name).join(' / '):'Início';
+ const here=folders.filter(f=>(f.parent_id||null)===nav.folder);
+ const crumbs='<nav class="crumbs" aria-label="Pasta atual"><button class="link" data-open-folder="">Início</button>'+path(nav.folder).map(f=>`<span>/</span><button class="link" data-open-folder="${esc(f.id)}">${esc(f.name)}</button>`).join('')+'</nav>';
+ const size=n=>n>1048576?(n/1048576).toFixed(1)+' MB':(n/1024).toFixed(1)+' KB';
+ const rows=here.map(f=>`<tr><td><button class="link folder-link" data-open-folder="${esc(f.id)}">📁 ${esc(f.name)}</button></td><td>Pasta</td><td>${esc(new Date(f.created_at).toLocaleDateString())}</td><td class="row-actions"><button class="secondary" data-rename-folder="${esc(f.id)}">Renomear</button><button class="secondary" data-move-folder="${esc(f.id)}">Mover</button><button class="danger" data-delete-folder="${esc(f.id)}">Excluir</button></td></tr>`)
+  .concat(files.map(f=>`<tr><td>📄 ${esc(f.name)}</td><td>${size(f.size)}</td><td>${esc(new Date(f.created_at).toLocaleDateString())}</td><td class="row-actions"><a class="button secondary" href="/api/files/${esc(f.id)}/download">Baixar ↓</a><button class="secondary" data-rename-file="${esc(f.id)}">Renomear</button><button class="secondary" data-move-file="${esc(f.id)}">Mover</button><button class="danger" data-remove-file="${esc(f.id)}">Excluir</button></td></tr>`));
+ const browser=`<div class="card"><div class="card-head"><h3>Arquivos</h3><div class="toolbar browser-tools"><select id="browse-storage" aria-label="Storage">${stores.map(s=>`<option value="${esc(s.id)}" ${s.id===nav.storage?'selected':''}>${esc(s.name)}</option>`).join('')}</select><button class="secondary" id="new-folder">＋ Pasta</button><button id="upload-here">↑ Enviar arquivo</button></div></div>${crumbs}${rows.length?table(['NOME','TAMANHO','CRIADO EM',''],rows):empty('Pasta vazia','Crie uma pasta ou envie um arquivo para cá.')}<p class="help">Pastas são organizadas pelo SETAPI: renomear e mover não copiam nada no provedor. Os arquivos continuam privados.</p></div>`;
+ $('#content').innerHTML=browser+providers;
  storageActions();
- document.querySelectorAll('[data-remove-file]').forEach(b=>b.onclick=()=>confirmDelete('Excluir arquivo',b.dataset.removeFile,()=>api('/files/'+b.dataset.removeFile,{method:'DELETE'})));
- document.querySelectorAll('[data-upload]').forEach(b=>b.onclick=()=>modal('Enviar arquivo','<label>Arquivo<input type="file" name="file" required></label>',async f=>{await api('/files/'+b.dataset.upload,{method:'POST',body:f});toast('Upload concluído.');},'Enviar'));
+ const go=()=>render().catch(e=>toast(e.message));
+ $('#browse-storage').onchange=e=>{state.browse={storage:e.target.value,folder:null};go();};
+ document.querySelectorAll('[data-open-folder]').forEach(b=>b.onclick=()=>{nav.folder=b.dataset.openFolder||null;go();});
+ $('#new-folder').onclick=()=>modal('Nova pasta em '+label(nav.folder),field('name','Nome da pasta'),async f=>{await api('/folders',{method:'POST',body:{storage_id:nav.storage,name:f.get('name'),parent_id:nav.folder}});toast('Pasta criada.');},'Criar pasta');
+ $('#upload-here').onclick=()=>modal('Enviar para '+label(nav.folder),'<label>Arquivo<input type="file" name="file" required></label>',async f=>{await api('/files/'+nav.storage+(nav.folder?'?folder_id='+nav.folder:''),{method:'POST',body:f});toast('Upload concluído.');},'Enviar');
+ // Destinations for a move: the top level and every folder, except the moved folder and what is inside it.
+ const inside=(id,root)=>path(id).some(f=>f.id===root);
+ const destinations=(skip)=>'<label>Mover para<select name="target"><option value="">Início</option>'+folders.filter(f=>!skip||!inside(f.id,skip)).map(f=>[label(f.id),f.id]).sort().map(([l,id])=>`<option value="${esc(id)}">${esc(l)}</option>`).join('')+'</select></label>';
+ const file=id=>files.find(x=>x.id===id);
+ document.querySelectorAll('[data-rename-folder]').forEach(b=>b.onclick=()=>{const f=byId[b.dataset.renameFolder];modal('Renomear pasta',field('name','Novo nome',f.name),async d=>{await api('/folders/'+f.id,{method:'PATCH',body:{name:d.get('name')}});toast('Pasta renomeada.');});});
+ document.querySelectorAll('[data-move-folder]').forEach(b=>b.onclick=()=>{const f=byId[b.dataset.moveFolder];modal('Mover pasta '+f.name,destinations(f.id),async d=>{await api('/folders/'+f.id,{method:'PATCH',body:{parent_id:d.get('target')||null}});toast('Pasta movida.');},'Mover');});
+ document.querySelectorAll('[data-delete-folder]').forEach(b=>b.onclick=()=>{const f=byId[b.dataset.deleteFolder];
+  modal('Excluir pasta '+f.name,'<p>Se a pasta tiver conteúdo, todas as subpastas e arquivos dentro dela também serão apagados, inclusive no provedor.</p>'+field('confirm','Para confirmar, digite '+f.name),async d=>{if(d.get('confirm')!==f.name)throw Error('A confirmação não corresponde.');await api('/folders/'+f.id+'?recursive=true',{method:'DELETE'});toast('Pasta excluída.');},'Excluir permanentemente');});
+ document.querySelectorAll('[data-rename-file]').forEach(b=>b.onclick=()=>{const f=file(b.dataset.renameFile);modal('Renomear arquivo',field('name','Novo nome',f.name),async d=>{await api('/files/'+f.id,{method:'PATCH',body:{name:d.get('name')}});toast('Arquivo renomeado.');});});
+ document.querySelectorAll('[data-move-file]').forEach(b=>b.onclick=()=>{const f=file(b.dataset.moveFile);modal('Mover '+f.name,destinations(null),async d=>{await api('/files/'+f.id,{method:'PATCH',body:{folder_id:d.get('target')||null}});toast('Arquivo movido.');},'Mover');});
+ document.querySelectorAll('[data-remove-file]').forEach(b=>b.onclick=()=>{const f=file(b.dataset.removeFile);confirmDelete('Excluir arquivo',f.name,()=>api('/files/'+f.id,{method:'DELETE'}));});
 }
 const BACKUP_STATUS={completed:['Concluído',true],failed:['Falhou',false],queued:['Na fila',false],running:['Em andamento',false],expired:['Expirado',false]};
 function backupBadge(r){const [label,ok]=BACKUP_STATUS[r.status]||[r.status,false];return badge(label,ok);}

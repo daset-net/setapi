@@ -146,3 +146,15 @@ CREATE TABLE IF NOT EXISTS setapi.restores (
  status text NOT NULL DEFAULT 'queued', error text, requested_by uuid,
  created_at timestamptz NOT NULL DEFAULT now(), finished_at timestamptz
 );
+-- Folders are virtual: renaming or moving never copies objects in the provider.
+CREATE TABLE IF NOT EXISTS setapi.folders (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ storage_id uuid NOT NULL REFERENCES setapi.storages(id) ON DELETE RESTRICT,
+ organization_id uuid REFERENCES setapi.organizations(id) ON DELETE RESTRICT,
+ parent_id uuid REFERENCES setapi.folders(id) ON DELETE RESTRICT,
+ name text NOT NULL CHECK(length(name) BETWEEN 1 AND 255 AND position('/' in name)=0),
+ created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS folders_name_idx ON setapi.folders(storage_id,COALESCE(parent_id,'00000000-0000-0000-0000-000000000000'::uuid),lower(name));
+ALTER TABLE setapi.files ADD COLUMN IF NOT EXISTS folder_id uuid REFERENCES setapi.folders(id) ON DELETE RESTRICT;
+CREATE INDEX IF NOT EXISTS files_folder_idx ON setapi.files(storage_id,folder_id);

@@ -179,3 +179,9 @@ td.row-actions{max-width:none;overflow:visible;white-space:normal;text-align:rig
 .export-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}.export-card{display:flex;flex-direction:column;margin:0}.export-card p{flex:1}.export-card button{align-self:flex-start}
 .export-tag{align-self:flex-start;font-size:11px;font-weight:700;letter-spacing:.12em;padding:6px 10px;border-radius:8px;background:var(--tint);color:color-mix(in srgb,var(--green) 75%,#000);margin-bottom:14px}
 @media(max-width:1000px){.export-grid{grid-template-columns:1fr}}
+.browser-tools{margin:0;flex-wrap:wrap;justify-content:flex-end}.browser-tools select{max-width:240px}
+.crumbs{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:0 0 16px;font-size:14px;color:var(--muted)}
+button.link{background:none;box-shadow:none!important;padding:4px 6px;color:color-mix(in srgb,var(--green) 80%,#000);font-weight:600;font-size:14px;transform:none!important}button.link:hover{background:var(--tint)}
+.folder-link{font-size:14px}
+a.button{display:inline-flex;align-items:center;border-radius:9px;font-weight:600;font-size:12.5px;padding:7px 12px;margin:3px 0 3px 6px;background:var(--tint);color:color-mix(in srgb,var(--green) 70%,#000)}
+.browser-tools{flex:1;flex-wrap:nowrap}@media(max-width:800px){.browser-tools{flex-wrap:wrap;justify-content:flex-start}}

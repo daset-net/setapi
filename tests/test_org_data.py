@@ -83,3 +83,54 @@ def test_organization_administrator_restores_a_previous_backup(admin_client, tmp
     # Restore points of another organization are out of reach.
     other = org_admin(c, b)[0]
     assert c.post('/api/backups/' + point['id'] + '/restore', headers=other).status_code == 404
+
+
+def test_organization_administrator_manages_storage_and_folders_by_api(admin_client, monkeypatch):
+    c = admin_client
+    a, b = org(c), org(c)
+    headers, _, _ = org_admin(c, a)
+    other, _, _ = org_admin(c, b)
+    objects = {}
+    monkeypatch.setattr(storage.Storage, 'upload', lambda self, path, key, content_type=None: (objects.__setitem__(key, open(path, 'rb').read()), key)[1])
+    monkeypatch.setattr(storage.Storage, 'delete', lambda self, key: objects.pop(key))
+    # Connecting storage with the organization administrator token.
+    store = c.post('/api/storages', headers=headers, json={'name': 'arquivos', 'provider': 's3', 'config': S3})
+    assert store.status_code == 201, store.text
+    sid = store.json()['id']
+    assert store.json()['organization_id'] == a
+    folder = lambda **body: c.post('/api/folders', headers=headers, json={'storage_id': sid, **body})
+    docs = folder(name='Documentos').json()
+    fotos = folder(name='Fotos').json()
+    exames = folder(name='Exames', parent_id=docs['id']).json()
+    assert folder(name='documentos').status_code == 409
+    assert folder(name='a/b').status_code == 422
+    up = c.post('/api/files/' + sid, headers=headers, params={'folder_id': exames['id']}, files={'file': ('laudo.pdf', b'%PDF-1', 'application/pdf')})
+    assert up.status_code == 201, up.text
+    fid = up.json()['id']
+    listed = lambda **q: [f['name'] for f in c.get('/api/files', headers=headers, params={'storage_id': sid, **q}).json()['data']]
+    assert listed(folder_id=exames['id']) == ['laudo.pdf'] and listed(root=True) == []
+    # Rename and move the file; rename and move folders.
+    assert c.patch('/api/files/' + fid, headers=headers, json={'name': 'laudo-2026.pdf', 'folder_id': fotos['id']}).json()['folder_id'] == fotos['id']
+    assert listed(folder_id=fotos['id']) == ['laudo-2026.pdf']
+    assert c.patch('/api/files/' + fid, headers=headers, json={'folder_id': None}).json()['folder_id'] is None
+    assert listed(root=True) == ['laudo-2026.pdf']
+    assert c.patch('/api/folders/' + docs['id'], headers=headers, json={'name': 'Documentos 2026'}).json()['name'] == 'Documentos 2026'
+    assert c.patch('/api/folders/' + docs['id'], headers=headers, json={'parent_id': exames['id']}).status_code == 422
+    assert c.patch('/api/folders/' + exames['id'], headers=headers, json={'parent_id': None}).json()['parent_id'] is None
+    names = sorted(f['name'] for f in c.get('/api/folders', headers=headers, params={'storage_id': sid}).json()['data'])
+    assert names == ['Documentos 2026', 'Exames', 'Fotos']
+    # Another organization sees none of it.
+    assert c.get('/api/folders', headers=other, params={'storage_id': sid}).status_code == 404
+    assert c.patch('/api/files/' + fid, headers=other, json={'name': 'x'}).status_code == 404
+    assert c.delete('/api/folders/' + fotos['id'], headers=other).status_code == 404
+    # A folder with content needs recursive=true, and then its files leave the provider too.
+    c.patch('/api/files/' + fid, headers=headers, json={'folder_id': fotos['id']})
+    folder(name='Viagem', parent_id=fotos['id'])
+    assert c.delete('/api/folders/' + fotos['id'], headers=headers).status_code == 409
+    assert c.delete('/api/folders/' + fotos['id'], headers=headers, params={'recursive': 'true'}).status_code == 204
+    assert objects == {} and listed() == []
+    assert c.delete('/api/folders/' + exames['id'], headers=headers).status_code == 204
+    # A member token still cannot manage storage.
+    member = c.post('/api/users', json={'email': 'm-' + fid[:6] + '@org.test', 'password': 'Member-password-123', 'tenant_id': a}).json()
+    token = c.post('/api/tokens', json={'name': 'm', 'user_id': member['id']}).json()['token']
+    assert c.post('/api/folders', headers={'Authorization': 'Bearer ' + token}, json={'storage_id': sid, 'name': 'x'}).status_code == 403
