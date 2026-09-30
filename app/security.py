@@ -118,8 +118,9 @@ def storage_manager(user=Depends(principal)):
 
 
 def is_org_admin(user):
-    """Administrator of one organization: its session or an administrative token of that account."""
-    return bool(user.get('org_admin')) and user['admin'] and user.get('tenant_id') is not None and user.get('audience', 'panel') == 'panel'
+    """Administrator of one organization: any session or token of that account. A token carries its
+    owner's powers, so promoting the owner is enough; for limited access, issue it from a member."""
+    return bool(user.get('org_admin')) and user.get('tenant_id') is not None and user.get('audience', 'panel') == 'panel'
 
 
 def builder(user=Depends(principal)):

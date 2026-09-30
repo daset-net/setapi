@@ -258,6 +258,22 @@ def test_promoting_keeps_the_token_and_makes_it_administrative(admin_client):
     assert c.get('/api/auth/me', headers=headers).status_code == 401
 
 
+def test_any_token_of_an_organization_administrator_administers_it(admin_client):
+    c = admin_client
+    a = org(c)
+    user = c.post('/api/users', json={'email': uuid4().hex[:8] + '@org.test', 'password': 'Admin-password-123', 'tenant_id': a, 'org_admin': True})
+    assert user.status_code == 201, user.text
+    token = c.post('/api/tokens', json={'name': 'app', 'user_id': user.json()['id']})
+    assert token.status_code == 201, token.text
+    headers = {'Authorization': 'Bearer ' + token.json()['token']}
+    assert c.get('/api/auth/me', headers=headers).json()['org_admin'] is True
+    name = 'direto_' + uuid4().hex[:6]
+    assert c.post('/api/tables', headers=headers, json={'name': name, 'columns': [{'name': 'nome', 'type': 'text'}]}).status_code == 201
+    assert c.post(f'/api/data/{name}', headers=headers, json={'nome': 'x'}).status_code == 201
+    # Still confined to its own organization.
+    assert name not in names(c)
+
+
 def test_demoting_revokes_the_administrative_token(admin_client):
     c = admin_client
     a = org(c)

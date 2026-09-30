@@ -167,7 +167,7 @@ async function usersPage(){
   modal('Editar usuário','<label>E-mail<input name="email" type="email" value="'+esc(u.email)+'" required></label>'+(own?'<p class="help">Para trocar a sua senha, use Segurança da conta.</p>':'<label>Nova senha (deixe vazio para manter)<input name="password" type="password" minlength="12" autocomplete="new-password"></label><p class="help">Uma nova senha encerra as sessões e revoga os tokens deste usuário.</p>'),
    async f=>{const body={};if(f.get('email')!==u.email)body.email=f.get('email');if(f.get('password'))body.password=f.get('password');if(!Object.keys(body).length)return;await api('/users/'+u.id,{method:'PATCH',body});toast('Usuário atualizado.');});});
  document.querySelectorAll('[data-level]').forEach(b=>b.onclick=()=>{const u=who(b.dataset.level),up=!u.org_admin;
-  modal(up?'Promover a administrador':'Tornar membro','<p>'+(up?esc(u.email)+' passa a criar e alterar as tabelas de '+esc(orgLabel())+' e a gerenciar o storage dela.':esc(u.email)+' volta a ter só as permissões por tabela.')+(up?' Os tokens atuais deste usuário continuam valendo e passam a ser administrativos.':' Os tokens atuais deste usuário são revogados.')+'</p>',
+  modal(up?'Promover a administrador':'Tornar membro','<p>'+(up?esc(u.email)+' passa a criar e alterar as tabelas de '+esc(orgLabel())+' e a gerenciar o storage dela.':esc(u.email)+' volta a ter só as permissões por tabela.')+(up?' Os tokens atuais deste usuário continuam valendo, agora com os poderes de administrador.':' Os tokens atuais deste usuário são revogados.')+'</p>',
    async()=>{await api('/users/'+u.id+'/access',{method:'PUT',body:{scopes:u.scopes||{},tenant_id:u.tenant_id,org_admin:up}});toast(up?'Usuário promovido a administrador da organização.':'Usuário agora é membro.');},up?'Promover':'Tornar membro');});
  document.querySelectorAll('[data-delete-user]').forEach(b=>b.onclick=()=>{const u=who(b.dataset.deleteUser);confirmDelete('Excluir usuário',u.email,()=>api('/users/'+u.id,{method:'DELETE'}));});
 }
@@ -480,13 +480,21 @@ function tokenDialog(owner,owners){
  const ownerField=owner
   ?`<input type="hidden" name="user_id" value="${esc(owner.id)}"><p class="help">Token vinculado a <strong>${esc(ownerName(owner))}</strong>. Ele herda o isolamento da organização e não pode ampliar as permissões do usuário.</p>`
   :'<label>Usuário responsável<select name="user_id" required>'+(state.org?'':'<option value="">Minha conta global</option>')+owners.filter(u=>u.id!==state.user.id).map(u=>`<option value="${esc(u.id)}">${esc(ownerName(u))}</option>`).join('')+'</select></label><p class="help">O token pertence a '+esc(orgLabel())+' e age com as permissões do usuário escolhido.</p>';
- const global=!owner||(owner.role==='admin'&&!owner.tenant_id)||owner.org_admin;
+ const global=!owner||(owner.role==='admin'&&!owner.tenant_id);
+ if(owner&&owner.org_admin)return orgAdminTokenDialog(owner,ownerField);
  const role=owner?owner.role:'admin',ownerScopes=owner?owner.scopes:{};
- modal('Criar token de acesso',field('name','Nome da integração')+ownerField+expirySelect('hours','Validade do token',defaultExpiry())+(global?levelSelect(owner&&owner.org_admin?'admin':'standard',owner&&owner.org_admin?'tabelas e registros da organização':undefined):'')+accessModeSelect()+permissionsFields(ownerScopes,'Permissões do token')+'<p class="help">Use permissões mínimas nas aplicações. Nunca coloque um token administrativo no frontend público.</p>',async f=>{
+ modal('Criar token de acesso',field('name','Nome da integração')+ownerField+expirySelect('hours','Validade do token',defaultExpiry())+(global?levelSelect('standard'):'')+accessModeSelect()+permissionsFields(ownerScopes,'Permissões do token')+'<p class="help">Use permissões mínimas nas aplicações. Nunca coloque um token administrativo no frontend público.</p>',async f=>{
   const level=f.get('level')||'standard',mode=f.get('access_mode')||'full';
   const scopes=level==='admin'?{}:mode==='custom'?permissionValues(f):tokenScopes(mode,ownerScopes,role);
   const created=await api('/tokens',{method:'POST',body:{name:f.get('name'),user_id:f.get('user_id')||null,hours:expiryValue(f.get('hours')),scopes:scopes,admin:level==='admin'}});
   showSecret(created,owner?owner.email:null);return false;
+ },'Criar token');
+}
+// An organization administrator's token has the owner's powers: only a name and a validity to choose.
+function orgAdminTokenDialog(owner,ownerField){
+ modal('Criar token de acesso',field('name','Nome da integração')+ownerField+expirySelect('hours','Validade do token','never')+'<p class="help">Este token tem os poderes de administrador da organização: cria tabelas, lê e grava registros e envia arquivos. Use-o só no servidor da aplicação, nunca no frontend público; para cortar o acesso, revogue-o em Tokens de acesso. Para um acesso limitado, crie o token a partir de um membro.</p>',async f=>{
+  const created=await api('/tokens',{method:'POST',body:{name:f.get('name'),user_id:owner.id,hours:expiryValue(f.get('hours')),scopes:{},admin:true}});
+  showSecret(created,owner.email);return false;
  },'Criar token');
 }
 function permissionValues(f){const result={};for(const [k] of f.entries()){if(!k.startsWith('perm:'))continue;const [,t,a]=k.split(':');(result[t]??=[]).push(a);}return result;}

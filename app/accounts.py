@@ -285,13 +285,9 @@ def access(user_id:UUID,body:Access,user=Depends(admin)):
             raise HTTPException(422,'Organization administrators need an organization and panel access')
         row=conn.execute('UPDATE setapi.users SET scopes=%s,tenant_id=%s,org_admin=%s WHERE id=%s RETURNING id',(Jsonb(body.scopes),body.tenant_id,body.org_admin,user_id)).fetchone()
         if not row:raise HTTPException(404,'User not found')
-        if body.org_admin and existing['tenant_id']==body.tenant_id:
-            # Promotion inside the same organization: the user's tokens keep working and become
-            # administrative, so an integration does not break when its owner is promoted.
-            upgraded=conn.execute('UPDATE setapi.tokens SET admin=true WHERE user_id=%s AND revoked_at IS NULL AND expires_at>now() AND NOT admin',(user_id,)).rowcount
-            audit(conn,user,'user.access',str(user_id),{'org_admin':True,'tokens_upgraded':upgraded})
-        else:
-            # Less access or another organization: every token ends now.
+        # Promotion inside the same organization keeps the tokens: they carry the owner's new powers.
+        # Less access or another organization ends every token now.
+        if not (body.org_admin and existing['tenant_id']==body.tenant_id):
             conn.execute('UPDATE setapi.tokens SET revoked_at=now() WHERE user_id=%s',(user_id,))
-            audit(conn,user,'user.access',str(user_id))
+        audit(conn,user,'user.access',str(user_id))
     return {'ok':True}
