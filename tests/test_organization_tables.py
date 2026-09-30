@@ -237,6 +237,37 @@ def test_organization_administrator_in_the_panel(admin_client):
     assert panel.get('/api/auth/me').status_code == 401
 
 
+def test_promoting_keeps_the_token_and_makes_it_administrative(admin_client):
+    c = admin_client
+    a, b = org(c), org(c)
+    headers = member(c, a, {})
+    user_id = c.get('/api/auth/me', headers=headers).json()['id']
+    assert c.get('/api/auth/me', headers=headers).json()['org_admin'] is False
+    assert c.put(f'/api/users/{user_id}/access', json={'tenant_id': a, 'org_admin': True}).status_code == 200
+    # The same token keeps working, now as the organization administrator.
+    me = c.get('/api/auth/me', headers=headers).json()
+    assert me['org_admin'] is True and me['admin'] is False and me['organization_id'] == a
+    name = 'promovido_' + uuid4().hex[:6]
+    assert c.post('/api/tables', headers=headers, json={'name': name}).status_code == 201
+    assert name in names(c, a)
+    # Saving the administrator again is harmless and keeps the token.
+    assert c.put(f'/api/users/{user_id}/access', json={'tenant_id': a, 'org_admin': True}).status_code == 200
+    assert c.get('/api/auth/me', headers=headers).status_code == 200
+    # Moving to another organization ends the token, even as administrator there.
+    assert c.put(f'/api/users/{user_id}/access', json={'tenant_id': b, 'org_admin': True}).status_code == 200
+    assert c.get('/api/auth/me', headers=headers).status_code == 401
+
+
+def test_demoting_revokes_the_administrative_token(admin_client):
+    c = admin_client
+    a = org(c)
+    headers = member(c, a, {})
+    user_id = c.get('/api/auth/me', headers=headers).json()['id']
+    assert c.put(f'/api/users/{user_id}/access', json={'tenant_id': a, 'org_admin': True}).status_code == 200
+    assert c.put(f'/api/users/{user_id}/access', json={'tenant_id': a, 'org_admin': False}).status_code == 200
+    assert c.get('/api/auth/me', headers=headers).status_code == 401
+
+
 def test_organization_administrator_needs_an_organization(admin_client):
     c = admin_client
     assert c.post('/api/users', json={'email': uuid4().hex[:8] + '@x.test', 'password': 'Password-123456', 'org_admin': True}).status_code == 422

@@ -278,13 +278,20 @@ def access(user_id:UUID,body:Access,user=Depends(admin)):
     validate_scopes(body.scopes)
     with db.connection() as conn:
         require_active(conn,body.tenant_id)
-        existing=conn.execute('SELECT role,audience FROM setapi.users WHERE id=%s',(user_id,)).fetchone()
+        existing=conn.execute('SELECT role,audience,tenant_id FROM setapi.users WHERE id=%s',(user_id,)).fetchone()
         if existing and existing['role']=='admin' and body.tenant_id is not None:
             raise HTTPException(422,'Global administrators cannot be organization members')
         if body.org_admin and (body.tenant_id is None or (existing and existing['audience']!='panel')):
             raise HTTPException(422,'Organization administrators need an organization and panel access')
         row=conn.execute('UPDATE setapi.users SET scopes=%s,tenant_id=%s,org_admin=%s WHERE id=%s RETURNING id',(Jsonb(body.scopes),body.tenant_id,body.org_admin,user_id)).fetchone()
         if not row:raise HTTPException(404,'User not found')
-        conn.execute('UPDATE setapi.tokens SET revoked_at=now() WHERE user_id=%s',(user_id,))
-        audit(conn,user,'user.access',str(user_id))
+        if body.org_admin and existing['tenant_id']==body.tenant_id:
+            # Promotion inside the same organization: the user's tokens keep working and become
+            # administrative, so an integration does not break when its owner is promoted.
+            upgraded=conn.execute('UPDATE setapi.tokens SET admin=true WHERE user_id=%s AND revoked_at IS NULL AND expires_at>now() AND NOT admin',(user_id,)).rowcount
+            audit(conn,user,'user.access',str(user_id),{'org_admin':True,'tokens_upgraded':upgraded})
+        else:
+            # Less access or another organization: every token ends now.
+            conn.execute('UPDATE setapi.tokens SET revoked_at=now() WHERE user_id=%s',(user_id,))
+            audit(conn,user,'user.access',str(user_id))
     return {'ok':True}
