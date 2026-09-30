@@ -64,19 +64,31 @@ def decrypt_file(source, destination, key):
 
 
 def create_backup(job):
+    organization = job.get('organization_id')
     with db.connection() as conn:
         adapter = storage.get(conn, job['storage_id'])
-        providers = conn.execute('SELECT id,name,provider,config_encrypted FROM setapi.storages').fetchall()
-        schedules = conn.execute('SELECT * FROM setapi.schedules').fetchall()
+        if organization:
+            # Only this organization: its own tables, connections, schedules, policies and accounts (no password hashes).
+            org = conn.execute('SELECT id,name,table_prefix,active,created_at FROM setapi.organizations WHERE id=%s', (organization,)).fetchone()
+            providers = conn.execute('SELECT id,name,provider,config_encrypted FROM setapi.storages WHERE organization_id=%s', (organization,)).fetchall()
+            schedules = conn.execute('SELECT * FROM setapi.schedules WHERE organization_id=%s', (organization,)).fetchall()
+            extra = {'organization': org,
+                     'users': conn.execute('SELECT id,email,role,scopes,audience,org_admin,active,created_at FROM setapi.users WHERE tenant_id=%s', (organization,)).fetchall(),
+                     'policies': conn.execute('SELECT * FROM setapi.policies WHERE starts_with(table_name,%s)', (org['table_prefix'],)).fetchall()}
+            selection = ['--table=data.' + org['table_prefix'] + '*']
+        else:
+            providers = conn.execute('SELECT id,name,provider,config_encrypted FROM setapi.storages').fetchall()
+            schedules = conn.execute('SELECT * FROM setapi.schedules').fetchall()
+            extra, selection = {}, []
     with tempfile.TemporaryDirectory(prefix='setapi-backup-') as folder:
         folder = Path(folder)
         env = db.pg_environment(settings().database_url)
-        result = subprocess.run(['pg_dump', '--format=custom', '--no-owner', '--no-acl', '--file', str(folder / 'database.dump')],
+        result = subprocess.run(['pg_dump', '--format=custom', '--no-owner', '--no-acl', *selection, '--file', str(folder / 'database.dump')],
                                 env=env, capture_output=True, timeout=1800)
         if result.returncode:
             # libpq errors can contain connection strings. Never return raw stderr.
             raise RuntimeError('pg_dump failed: verify PostgreSQL client version, connectivity and database privileges')
-        config = {'format': 1, 'storages': providers, 'schedules': schedules,
+        config = {'format': 1, 'scope': 'organization' if organization else 'platform', **extra, 'storages': providers, 'schedules': schedules,
                   'note': 'Credentials remain encrypted with SETAPI_ENCRYPTION_KEY. Storage file contents are not included.'}
         (folder / 'config.json').write_text(json.dumps(config, default=str, indent=2))
         with tarfile.open(folder / 'bundle.tar', 'w') as archive:

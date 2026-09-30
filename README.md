@@ -288,6 +288,17 @@ Com **Plataforma** no seletor, o administrador global abre **Configurações**:
 
 Na API: `GET /api/platform/branding` (público) e `GET`/`PUT /api/platform/settings` (administrador global).
 
+### Backups da plataforma e das organizações
+
+- **Plataforma → Backups**: cópia criptografada do banco inteiro, enviada para um destino da plataforma. O cartão **Backups das organizações** mostra o agendamento e o último backup de cada organização, com Backup agora, Agendar e Remover.
+- **Organização → Backups**: cópia só das tabelas dela (com os registros), das permissões das tabelas, das conexões de storage e da lista de usuários sem senhas, enviada para o storage da própria organização.
+- Cada agendamento mantém de **1 a 7** cópias; as mais antigas são excluídas do provedor depois de cada backup concluído.
+- Na API: `organization_id` em `POST /api/backups` e `POST /api/backup-schedules`; `GET /api/backups?organization_id=…` ou `?all=true`.
+
+### Pesquisa nos registros
+
+`GET /api/data/<tabela>?search=texto` procura o texto em todos os campos legíveis (ou só em `search_field`), sem diferenciar maiúsculas, acentos e símbolos: `sao-paulo!` encontra "São Paulo". O painel mostra a pesquisa, de 1 a 100 registros por página e a navegação acima e abaixo da lista.
+
 ### Google Drive: conectar com Google
 
 No painel, escolha a organização no seletor e abra **Storage e arquivos → Conectar storage → Google Drive → Conectar Google** (para os backups da plataforma: **Plataforma → Backups → Conectar destino**). O Google abre na hora: quem não está logado informa e-mail e senha; quem já está logado vai direto para a tela de autorização. Ao voltar, o SETAPI cria uma pasta exclusiva, salva o refresh token criptografado e deixa a conexão disponível para arquivos e backups.

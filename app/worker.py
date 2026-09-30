@@ -32,7 +32,7 @@ def schedule_jobs():
         rows = conn.execute('SELECT * FROM setapi.schedules WHERE enabled AND next_run<=now() FOR UPDATE SKIP LOCKED').fetchall()
         for row in rows:
             if not conn.execute("SELECT 1 FROM setapi.backups WHERE schedule_id=%s AND status IN ('queued','running')", (row['id'],)).fetchone():
-                conn.execute('INSERT INTO setapi.backups(storage_id,schedule_id) VALUES(%s,%s)', (row['storage_id'], row['id']))
+                conn.execute('INSERT INTO setapi.backups(storage_id,schedule_id,organization_id) VALUES(%s,%s,%s)', (row['storage_id'], row['id'], row['organization_id']))
             conn.execute("UPDATE setapi.schedules SET next_run=now()+every_hours*interval '1 hour' WHERE id=%s", (row['id'],))
 
 
@@ -57,6 +57,8 @@ def run_backup():
             log.error('Backup %s failed (%s)', job['id'], type(exc).__name__)
             conn.execute("UPDATE setapi.backups SET status='failed',error=%s,finished_at=now() WHERE id=%s", ('Backup failed: check database client, storage credentials and connectivity', job['id']))
             mail.notify_admins(conn, 'Backup falhou', f'O backup {job["id"]} falhou. Confira o storage de destino e a conexão com o banco em Backups no painel.')
+            if job.get('organization_id'):
+                mail.notify_organization(conn, job['organization_id'], 'Backup falhou', f'O backup {job["id"]} da organização falhou. Confira a conexão de storage de destino.')
     return True
 
 

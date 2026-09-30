@@ -2,7 +2,7 @@ import os
 import tempfile
 from pathlib import Path
 from uuid import UUID, uuid4
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
@@ -147,53 +147,66 @@ def download_file(file_id: UUID, user=Depends(principal)):
     return FileResponse(path, filename=row['name'], media_type='application/octet-stream', background=BackgroundTask(os.unlink, path))
 
 
+BACKUP_ORG = Field(None, description='Organization whose tables are backed up into its own storage; omit for the whole platform.')
+
+
 class BackupCreate(BaseModel):
     storage_id: UUID
+    organization_id: UUID | None = BACKUP_ORG
 
 
-def platform_storage(conn, storage_id):
-    # A backup is the whole database; it must never land in one organization's storage.
-    return storage.get(conn, storage_id, None)
+def backup_storage(conn, storage_id, organization_id):
+    # The platform backup is the whole database: only platform storage receives it.
+    # An organization backup holds only its tables and goes to that organization's storage.
+    if organization_id is not None and not conn.execute('SELECT 1 FROM setapi.organizations WHERE id=%s AND active', (organization_id,)).fetchone():
+        raise HTTPException(422, 'Choose an active organization')
+    return storage.get(conn, storage_id, organization_id)
 
 
 @router.post('/backups', status_code=202)
 def queue_backup(body: BackupCreate, user=Depends(admin)):
     with db.connection() as conn:
-        platform_storage(conn, body.storage_id)
+        backup_storage(conn, body.storage_id, body.organization_id)
         pending = conn.execute("SELECT count(*) AS n FROM setapi.backups WHERE status IN ('queued','running')").fetchone()['n']
         if pending >= 5:
             raise HTTPException(429, 'Backup queue is full')
-        row = conn.execute('INSERT INTO setapi.backups(storage_id) VALUES(%s) RETURNING id,status', (body.storage_id,)).fetchone()
-        audit(conn, user, 'backup.queue', str(row['id']))
+        row = conn.execute('INSERT INTO setapi.backups(storage_id,organization_id) VALUES(%s,%s) RETURNING id,status,organization_id',
+                           (body.storage_id, body.organization_id)).fetchone()
+        audit(conn, user, 'backup.queue', str(row['id']), {'organization_id': str(body.organization_id) if body.organization_id else None})
     return row
 
 
 @router.get('/backups')
-def list_backups(user=Depends(admin)):
+def list_backups(organization_id: UUID | None = Query(None, description='Backups of this organization; omit for the platform backups.'),
+                 all: bool = Query(False, description='Every backup: the platform and all organizations.'), user=Depends(admin)):
     with db.connection() as conn:
-        return {'data': conn.execute('SELECT * FROM setapi.backups ORDER BY created_at DESC LIMIT 100').fetchall()}
+        return {'data': conn.execute('SELECT * FROM setapi.backups WHERE %s OR organization_id IS NOT DISTINCT FROM %s ORDER BY created_at DESC LIMIT 200',
+                                     (all, organization_id)).fetchall()}
 
 
 class ScheduleCreate(BaseModel):
     storage_id: UUID
     every_hours: int = Field(default=24, ge=1, le=8760)
-    retention: int = Field(default=7, ge=1, le=365)
+    retention: int = Field(default=7, ge=1, le=7, description='How many completed copies to keep, from 1 to 7.')
+    organization_id: UUID | None = BACKUP_ORG
 
 
 @router.post('/backup-schedules', status_code=201)
 def create_schedule(body: ScheduleCreate, user=Depends(admin)):
     with db.connection() as conn:
-        platform_storage(conn, body.storage_id)
-        row = conn.execute('INSERT INTO setapi.schedules(storage_id,every_hours,retention) VALUES(%s,%s,%s) RETURNING *',
-            (body.storage_id, body.every_hours, body.retention)).fetchone()
+        backup_storage(conn, body.storage_id, body.organization_id)
+        row = conn.execute('INSERT INTO setapi.schedules(storage_id,every_hours,retention,organization_id) VALUES(%s,%s,%s,%s) RETURNING *',
+            (body.storage_id, body.every_hours, body.retention, body.organization_id)).fetchone()
         audit(conn, user, 'backup.schedule', str(row['id']))
     return row
 
 
 @router.get('/backup-schedules')
-def list_schedules(user=Depends(admin)):
+def list_schedules(organization_id: UUID | None = Query(None, description='Schedules of this organization; omit for the platform schedules.'),
+                   all: bool = Query(False, description='Every schedule: the platform and all organizations.'), user=Depends(admin)):
     with db.connection() as conn:
-        return {'data': conn.execute('SELECT * FROM setapi.schedules ORDER BY next_run').fetchall()}
+        return {'data': conn.execute('SELECT * FROM setapi.schedules WHERE %s OR organization_id IS NOT DISTINCT FROM %s ORDER BY next_run',
+                                     (all, organization_id)).fetchall()}
 
 
 @router.delete('/backup-schedules/{schedule_id}', status_code=204)

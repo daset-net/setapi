@@ -127,3 +127,12 @@ END $$;
 CREATE TABLE IF NOT EXISTS setapi.platform_settings (
  name text PRIMARY KEY, value jsonb NOT NULL DEFAULT '{}'
 );
+-- Search text without accents, case or punctuation: "São-Paulo!" and "sao paulo" both become "saopaulo".
+CREATE OR REPLACE FUNCTION setapi.search_text(value text) RETURNS text LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+ SELECT regexp_replace(lower(translate(value,
+  'ÁÀÂÃÄÅĀĂĄáàâãäåāăąÉÈÊËĒĖĘĚéèêëēėęěÍÌÎÏĪĮíìîïīįıÓÒÔÕÖØŌőÓóòôõöøōőÚÙÛÜŪŮŰŲúùûüūůűųÇĆČçćčÑŃŇñńňÝŸýÿŠŚšśŽŹŻžźżĎďŤťŘřĹĽŁĺľł',
+  'AAAAAAAAAaaaaaaaaaEEEEEEEEeeeeeeeeIIIIIIiiiiiiiOOOOOOOoOooooooooUUUUUUUUuuuuuuuuCCCcccNNNnnnYYyySSssZZZzzzDdTtRrLLLlll')), '[^a-z0-9]', '', 'g')
+$$;
+-- Organization backups: only that organization's tables, stored in its own storage. NULL = the whole platform.
+ALTER TABLE setapi.schedules ADD COLUMN IF NOT EXISTS organization_id uuid REFERENCES setapi.organizations(id);
+ALTER TABLE setapi.backups ADD COLUMN IF NOT EXISTS organization_id uuid REFERENCES setapi.organizations(id);

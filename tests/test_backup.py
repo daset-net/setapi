@@ -82,3 +82,42 @@ def test_worker_progress_visible_and_failure_recorded(admin_client,monkeypatch):
     with db.connection() as conn:
         row=conn.execute('SELECT status,error FROM setapi.backups WHERE id=%s',(job['id'],)).fetchone()
     assert row['status']=='failed' and row['error']
+
+
+def test_organization_backup_holds_only_its_tables(admin_client,tmp_path,monkeypatch):
+    from app import storage,db
+    from app.backup import decrypt_file
+    import tarfile
+    from uuid import uuid4
+    c=admin_client
+    org=c.post('/api/organizations',json={'name':'Backup '+uuid4().hex[:8]}).json()['id']
+    other=c.post('/api/organizations',json={'name':'Outra '+uuid4().hex[:8]}).json()['id']
+    for owner in (org,other):
+        assert c.post('/api/tables',params={'organization_id':owner},json={'name':'pacientes','columns':[{'name':'nome'}]}).status_code==201
+    store=c.post('/api/storages',json={'name':'org_backup','provider':'s3','organization_id':org,'config':{'bucket':'test','access_key_id':'test','secret_access_key':'test'}}).json()
+    platform=c.post('/api/storages',json={'name':'plat_backup_'+uuid4().hex[:6],'provider':'s3','config':{'bucket':'test','access_key_id':'test','secret_access_key':'test'}}).json()
+    # The organization backup must land in its own storage, never the platform's (and vice versa).
+    assert c.post('/api/backups',json={'storage_id':platform['id'],'organization_id':org}).status_code==404
+    assert c.post('/api/backups',json={'storage_id':store['id']}).status_code==404
+    assert c.post('/api/backup-schedules',json={'storage_id':store['id'],'organization_id':org,'retention':8}).status_code==422
+    assert c.post('/api/backup-schedules',json={'storage_id':store['id'],'organization_id':org,'retention':3}).status_code==201
+    assert [s['retention'] for s in c.get('/api/backup-schedules',params={'organization_id':org}).json()['data']]==[3]
+    assert all(s['organization_id'] is None for s in c.get('/api/backup-schedules').json()['data'])
+    assert org in [s['organization_id'] for s in c.get('/api/backup-schedules',params={'all':'true'}).json()['data']]
+    saved=tmp_path/'org.setapi'
+    def upload(self,path,key,content_type='application/octet-stream'):
+        import shutil
+        shutil.copyfile(path,saved);return key
+    monkeypatch.setattr(storage.Storage,'upload',upload)
+    create_backup({'id':'org-test','storage_id':store['id'],'organization_id':org})
+    from app.config import settings
+    decrypt_file(saved,tmp_path/'bundle.tar',settings().encryption_key)
+    with tarfile.open(tmp_path/'bundle.tar') as archive:
+        archive.extractall(tmp_path,filter='data')
+    config=json.loads((tmp_path/'config.json').read_text())
+    assert config['scope']=='organization' and config['organization']['id']==org
+    assert [s['name'] for s in config['storages']]==['org_backup']
+    listing=subprocess.run(['pg_restore','--list',str(tmp_path/'database.dump')],capture_output=True,text=True).stdout
+    with db.connection() as conn:
+        mine,theirs=(conn.execute('SELECT table_prefix FROM setapi.organizations WHERE id=%s',(o,)).fetchone()['table_prefix'] for o in (org,other))
+    assert mine+'pacientes' in listing and theirs not in listing and 'TABLE setapi ' not in listing and 'TABLE DATA setapi ' not in listing

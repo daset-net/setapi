@@ -12,6 +12,8 @@ router = APIRouter(prefix='/api/data', tags=['Data'])
 def list_records(table: str, limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0, le=10000),
                  sort: str = Query('-created_at', description='Field to sort by; prefix with - for descending.'),
                  filter: str = Query('{}', description='JSON object of equality conditions, e.g. {"status":"ativo"}; at most 20.'),
+                 search: str = Query('', max_length=200, description='Text contained in any readable field (or in search_field), ignoring case, accents and punctuation.'),
+                 search_field: str = Query('', description='Limit the search to this field.'),
                  include_total: bool = True, organization_id: UUID | None = Query(None, description='Organization whose tables to use; omit for the platform. Organization users always work in their own.'), user=Depends(principal)):
     """List records of a table, paginated with limit and offset."""
     with db.connection() as conn:
@@ -38,11 +40,19 @@ def list_records(table: str, limit: int = Query(50, ge=1, le=200), offset: int =
             clauses.append(sql.SQL('{} IS NOT DISTINCT FROM %s').format(sql.Identifier(key)))
             from psycopg.types.json import Jsonb
             params.append(Jsonb(value) if cols[key] == 'jsonb' else value)
+        if search.strip():
+            if search_field and search_field not in readable:
+                raise HTTPException(422, 'Unknown search field')
+            fields = [search_field] if search_field else readable
+            clauses.append(sql.SQL('({})').format(sql.SQL(' OR ').join(
+                sql.SQL("setapi.search_text({}::text) LIKE '%%' || setapi.search_text(%s) || '%%'").format(sql.Identifier(f)) for f in fields)))
+            params.extend([search] * len(fields))
         where = sql.SQL(' AND ').join(clauses) if clauses else sql.SQL('TRUE')
         if field not in readable and field not in ('created_at','id'):
             raise HTTPException(403,'Sorting by this field is not permitted')
         rule = policies.policy(conn, table, user)
-        if not postgrest.enabled():
+        # PostgREST has no accent-free search; those reads use the native engine with the same policy clauses.
+        if not postgrest.enabled() or search.strip():
             return _native_list(conn, table, readable, where, params, field, sort, limit, offset, include_total)
     return postgrest.read(user, table, rule, readable, filters, sort, limit, offset, include_total, scope=name)
 

@@ -147,3 +147,35 @@ def test_platform_settings_brand_and_limits(admin_client, client):
     assert platform_settings.current()['max_upload_mb'] == 1
     admin_client.put('/api/platform/settings', json=base)
     assert platform_settings.current()['name'] == 'SETAPI'
+
+
+def test_search_ignores_case_accents_and_punctuation(admin_client):
+    table = unique()
+    create_table(admin_client, table)
+    for name in ('São Paulo', 'JOSÉ da Silva', 'Ana-Maria!', 'Pedro'):
+        assert admin_client.post('/api/data/' + table, json={'name': name, 'metadata': {'cidade': 'Goiânia'}}).status_code == 201
+    names = lambda **q: sorted(r['name'] for r in admin_client.get('/api/data/' + table, params=q).json()['data'])
+    assert names(search='sao paulo') == ['São Paulo']
+    assert names(search='jose') == ['JOSÉ da Silva']
+    assert names(search='anamaria') == ['Ana-Maria!']
+    assert len(names(search='goiania')) == 4
+    assert names(search='goiania', search_field='name') == []
+    assert admin_client.get('/api/data/' + table, params={'search': 'x', 'search_field': 'nada'}).status_code == 422
+    page = admin_client.get('/api/data/' + table, params={'search': 'a', 'limit': 1}).json()
+    assert page['total'] == 4 and len(page['data']) == 1
+
+
+def test_edit_and_delete_users(admin_client):
+    me = admin_client.get('/api/auth/me').json()
+    created = admin_client.post('/api/users', json={'email': 'editar@example.com', 'password': 'a' * 12}).json()
+    token = admin_client.post('/api/tokens', json={'name': 'antes', 'user_id': created['id']}).json()
+    changed = admin_client.patch('/api/users/' + created['id'], json={'email': 'Editado@Example.com', 'password': 'b' * 12})
+    assert changed.status_code == 200 and changed.json()['email'] == 'editado@example.com'
+    assert admin_client.get('/api/tables', headers={'Authorization': 'Bearer ' + token['token']}).status_code == 401
+    other = admin_client.post('/api/users', json={'email': 'outro@example.com', 'password': 'a' * 12}).json()
+    assert admin_client.patch('/api/users/' + other['id'], json={'email': 'editado@example.com'}).status_code == 409
+    assert admin_client.patch('/api/users/' + me['id'], json={'password': 'c' * 12}).status_code == 409
+    assert admin_client.delete('/api/users/' + me['id']).status_code == 409
+    assert admin_client.delete('/api/users/' + created['id']).status_code == 204
+    assert admin_client.delete('/api/users/' + created['id']).status_code == 404
+    assert admin_client.delete('/api/users/' + other['id']).status_code == 204

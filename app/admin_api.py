@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, ConfigDict
-from psycopg import sql
+from psycopg import errors, sql
 from psycopg.types.json import Jsonb
 from argon2.exceptions import VerificationError
 from . import db, tables, policies, platform_settings
@@ -230,23 +230,64 @@ def create_user(body: UserCreate, user=Depends(admin)):
     return row
 
 
-class Active(BaseModel):
-    active: bool
+class UserUpdate(BaseModel):
+    active: bool | None = None
+    email: str | None = Field(None, min_length=3, max_length=254)
+    password: str | None = Field(None, min_length=12, max_length=1024, description='New password; ends the user sessions and tokens.')
 
 
 @router.patch('/users/{user_id}')
-def toggle_user(user_id: UUID, body: Active, user=Depends(admin)):
-    if user_id == user['id']:
+def update_user(user_id: UUID, body: UserUpdate, user=Depends(admin)):
+    """Activate or deactivate an account, change its e-mail or set a new password."""
+    import re
+    own = user_id == user['id']
+    if own and body.active is False:
         raise HTTPException(409, 'Cannot deactivate your own account')
+    if own and body.password:
+        raise HTTPException(409, 'Change your own password in Account security')
+    if body.email is not None and not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', body.email):
+        raise HTTPException(422, 'Invalid email')
     with db.connection() as conn:
-        row = conn.execute('UPDATE setapi.users SET active=%s WHERE id=%s RETURNING id,active', (body.active, user_id)).fetchone()
+        row = conn.execute('SELECT id,active FROM setapi.users WHERE id=%s FOR UPDATE', (user_id,)).fetchone()
         if not row:
             raise HTTPException(404, 'User not found')
-        if not body.active:
-            conn.execute('DELETE FROM setapi.action_tokens WHERE user_id=%s',(user_id,))
-            conn.execute('UPDATE setapi.tokens SET revoked_at=now() WHERE user_id=%s', (user_id,))
-        audit(conn, user, 'user.active', str(user_id), {'active': body.active})
-    return row
+        changes = {}
+        if body.email is not None:
+            try:
+                with conn.transaction():
+                    conn.execute('UPDATE setapi.users SET email=%s WHERE id=%s', (body.email.lower(), user_id))
+            except errors.UniqueViolation:
+                raise HTTPException(409, 'Já existe um usuário com esse e-mail.')
+            changes['email'] = body.email.lower()
+        if body.password:
+            conn.execute('UPDATE setapi.users SET password_hash=%s WHERE id=%s', (hash_password(body.password), user_id))
+            changes['password'] = True
+        if body.active is not None:
+            conn.execute('UPDATE setapi.users SET active=%s WHERE id=%s', (body.active, user_id))
+            changes['active'] = body.active
+        # A new password or a deactivation ends every session, token and pending link of the account.
+        if body.password or body.active is False:
+            conn.execute('DELETE FROM setapi.action_tokens WHERE user_id=%s', (user_id,))
+            conn.execute('UPDATE setapi.tokens SET revoked_at=now() WHERE user_id=%s AND revoked_at IS NULL', (user_id,))
+        audit(conn, user, 'user.active' if list(changes) == ['active'] else 'user.update', str(user_id), changes)
+        return conn.execute('SELECT id,email,active FROM setapi.users WHERE id=%s', (user_id,)).fetchone()
+
+
+@router.delete('/users/{user_id}', status_code=204)
+def delete_user(user_id: UUID, user=Depends(admin)):
+    """Delete an account with its tokens. Accounts that own stored files must be deactivated instead."""
+    if user_id == user['id']:
+        raise HTTPException(409, 'Cannot delete your own account')
+    with db.connection() as conn:
+        if not conn.execute('SELECT 1 FROM setapi.users WHERE id=%s', (user_id,)).fetchone():
+            raise HTTPException(404, 'User not found')
+        files = conn.execute('SELECT count(*) AS n FROM setapi.files WHERE owner_id=%s', (user_id,)).fetchone()['n']
+        if files:
+            raise HTTPException(409, f'Este usuário enviou {files} arquivo(s). Exclua os arquivos ou apenas desative a conta.')
+        conn.execute('DELETE FROM setapi.action_tokens WHERE user_id=%s', (user_id,))
+        conn.execute('DELETE FROM setapi.tokens WHERE user_id=%s', (user_id,))
+        conn.execute('DELETE FROM setapi.users WHERE id=%s', (user_id,))
+        audit(conn, user, 'user.delete', str(user_id))
 
 
 class TokenCreate(BaseModel):
