@@ -2,7 +2,7 @@
 const $ = s => document.querySelector(s);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const state = {user:null, tables:[], page:'overview', table:null, offset:0, search:'', searchField:'', socket:null, org:null};
-const titles = {organizations:['Organizações','Cada organização tem as próprias tabelas, usuários, tokens e storage.'],security:['Segurança da conta','Senha, autenticação em duas etapas e sessões.'],overview:['Visão geral','Acompanhe a plataforma e as organizações.'],tables:['Tabelas e API','Estruture seus dados. A API acompanha cada alteração.'],users:['Usuários','Controle quem pode acessar esta organização.'],admins:['Administradores','Contas globais que administram a plataforma.'],tokens:['Tokens de acesso','Permissões explícitas para cada integração.'],storages:['Storage e arquivos','Conecte os provedores desta organização e organize os arquivos.'],backups:['Backups','Cópias criptografadas, agendadas e com retenção de 1 a 7 cópias.'],audit:['Atividade','Histórico das operações realizadas pela API.'],settings:['Configurações','Personalização, e-mail, aplicativo Google e opções avançadas da plataforma.']};
+const titles = {organizations:['Organizações','Cada organização tem as próprias tabelas, usuários, tokens e storage.'],security:['Segurança da conta','Senha, autenticação em duas etapas e sessões.'],overview:['Visão geral','Acompanhe a plataforma e as organizações.'],tables:['Tabelas e API','Estruture seus dados. A API acompanha cada alteração.'],users:['Usuários','Controle quem pode acessar esta organização.'],admins:['Administradores','Contas globais que administram a plataforma.'],tokens:['Tokens de acesso','Permissões explícitas para cada integração.'],storages:['Storage e arquivos','Conecte os provedores desta organização e organize os arquivos.'],backups:['Backups','Cópias criptografadas, agendadas e com retenção de 1 a 7 cópias.'],audit:['Atividade','Histórico das operações realizadas pela API.'],export:['Exportar dados','Baixe todos os registros da organização em XLSX, CSV ou JSON.'],settings:['Configurações','Personalização, e-mail, aplicativo Google e opções avançadas da plataforma.']};
 function pageTitle(){return titles[state.page==='users'&&state.user.admin&&!state.org?'admins':state.page];}
 function scoped(path){
  // The administrator's selected organization applies to tables, records and activity, as in the API.
@@ -13,14 +13,14 @@ function savedOrg(){try{return localStorage.getItem('setapi.org');}catch{return 
 function saveOrg(id){try{id?localStorage.setItem('setapi.org',id):localStorage.removeItem('setapi.org');}catch{}}
 // The administrator's menu follows the switcher: the platform itself, or everything that belongs to one organization.
 const PLATFORM_PAGES=['overview','organizations','settings'];
-const ORG_PAGES=['tables','tokens','storages'];
+const ORG_PAGES=['tables','tokens','storages','export'];
 function canBuild(t){return state.user.admin||(state.user.org_admin&&(!t||!!t.organization_id));}
 function inOrg(){return !!(state.user&&(state.user.admin?state.org:state.user.organization_id));}
 function orgLabel(){const id=state.user.admin?state.org:state.user.organization_id;return id?((state.organizations||[]).find(o=>o.id===id)||{}).name||'Organização':'Plataforma';}
 function fitPage(){if(!state.user.admin)return;if(state.org&&PLATFORM_PAGES.includes(state.page))state.page='tables';if(!state.org&&ORG_PAGES.includes(state.page))state.page='overview';}
 function applyNav(){
  const platform=state.user.admin&&!state.org;
- document.querySelectorAll('nav [data-page]').forEach(b=>{const page=b.dataset.page;b.hidden=(b.hasAttribute('data-admin')&&!state.user.admin)||(b.hasAttribute('data-storage')&&!state.user.storage)||(page==='overview'&&!state.user.admin)||(state.user.admin&&state.org&&PLATFORM_PAGES.includes(page))||(platform&&ORG_PAGES.includes(page));});
+ document.querySelectorAll('nav [data-page]').forEach(b=>{const page=b.dataset.page;b.hidden=(b.hasAttribute('data-admin')&&!state.user.admin)||(b.hasAttribute('data-org-admin')&&!state.user.admin&&!state.user.org_admin)||(b.hasAttribute('data-storage')&&!state.user.storage)||(page==='overview'&&!state.user.admin)||(state.user.admin&&state.org&&PLATFORM_PAGES.includes(page))||(platform&&ORG_PAGES.includes(page));});
  $('nav [data-page="users"] span').textContent=platform?'Administradores':'Usuários';
  $('#nav-caption').textContent=platform?'PLATAFORMA':'NESTA ORGANIZAÇÃO';
 }
@@ -82,7 +82,7 @@ async function render(){
  if(state.socket && state.subscribed!==JSON.stringify(state.tables.map(t=>t.name)))connect();
  const [title,description]=pageTitle();$('#page-title').textContent=title;$('#page-description').textContent=description;$('#breadcrumb').textContent=orgLabel()+' / '+title;$('#page-actions').innerHTML='';
  document.querySelectorAll('[data-page]').forEach(b=>b.classList.toggle('active',b.dataset.page===state.page));
- const handlers={overview:overview,tables:tablesPage,users:usersPage,tokens:tokensPage,storages:storagesPage,backups:backupsPage,audit:auditPage,security:securityPage,organizations:organizationsPage,settings:settingsPage};await handlers[state.page]();
+ const handlers={overview:overview,tables:tablesPage,users:usersPage,tokens:tokensPage,storages:storagesPage,backups:backupsPage,audit:auditPage,security:securityPage,organizations:organizationsPage,settings:settingsPage,export:exportPage};await handlers[state.page]();
 }
 function action(label,fn){const b=document.createElement('button');b.textContent=label;b.onclick=fn;$('#page-actions').append(b);}
 async function overview(){
@@ -171,7 +171,7 @@ async function tokensPage(){
 async function storageDialog(){
  const google=await api('/integrations/google/config');
  modal('Conectar storage',field('name','Nome da conexão','Google Drive')+
-  '<label>Provedor<select name="provider" id="provider"><option value="drive">Google Drive</option><option value="r2-token">Cloudflare R2 · só com o token</option><option value="r2">Cloudflare R2 · chaves manuais</option><option value="s3">S3 compatível</option></select></label><div id="provider-fields"></div>',
+  '<label>Provedor<select name="provider" id="provider"><option value="drive">Google Drive</option><option value="r2-token">Cloudflare R2 · só com o token</option><option value="s3">S3 compatível</option></select></label><div id="provider-fields"></div>',
   async f=>{
    const provider=f.get('provider');
    if(provider==='drive'){
@@ -220,6 +220,25 @@ async function storagesPage(){
 }
 const BACKUP_STATUS={completed:['Concluído',true],failed:['Falhou',false],queued:['Na fila',false],running:['Em andamento',false],expired:['Expirado',false]};
 function backupBadge(r){const [label,ok]=BACKUP_STATUS[r.status]||[r.status,false];return badge(label,ok);}
+const EXPORT_FORMATS=[['xlsx','Planilha Excel (XLSX)','Uma aba para cada tabela. Abre no Excel, LibreOffice e Google Planilhas.'],['csv','CSV','Um arquivo .csv por tabela, num .zip. Bom para importar em outros sistemas.'],['json','JSON','Todas as tabelas num único arquivo, com os tipos preservados. Bom para programadores.']];
+async function exportPage(){
+ const own=state.tables.filter(t=>t.organization_id);
+ $('#content').innerHTML='<div class="card"><h3>O que exportar</h3><label>Tabelas<select id="export-table"><option value="">Todas as tabelas de '+esc(orgLabel())+'</option>'+own.map(t=>`<option value="${esc(t.name)}">${esc(t.name)}</option>`).join('')+'</select></label><p class="help">A exportação traz todos os registros e todos os campos, sem limite de página. Tabelas compartilhadas da plataforma não entram.</p></div>'+
+  '<div class="export-grid">'+EXPORT_FORMATS.map(([id,title,text])=>`<div class="card export-card"><span class="export-tag">${id.toUpperCase()}</span><h3>${esc(title)}</h3><p>${esc(text)}</p><button data-export="${id}">↓ Baixar ${id.toUpperCase()}</button></div>`).join('')+'</div>';
+ document.querySelectorAll('[data-export]').forEach(b=>b.onclick=async()=>{
+  const params=new URLSearchParams({format:b.dataset.export,table:$('#export-table').value});
+  if(state.user.admin&&state.org)params.set('organization_id',state.org);
+  b.disabled=true;const label=b.textContent;b.textContent='Preparando…';
+  try{
+   const response=await fetch('/api/export?'+params,{headers:{'X-SETAPI-CSRF':'1'}});
+   if(!response.ok){const err=await response.json().catch(()=>({detail:'Falha ao exportar'}));throw Error(typeof err.detail==='string'?err.detail:'Falha ao exportar');}
+   const name=(/filename="?([^";]+)"?/.exec(response.headers.get('content-disposition')||'')||[])[1]||('dados.'+b.dataset.export);
+   const url=URL.createObjectURL(await response.blob()),link=document.createElement('a');
+   link.href=url;link.download=name;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);
+   toast('Exportação pronta: '+name);
+  }catch(e){toast(e.message);}finally{b.disabled=false;b.textContent=label;}
+ });
+}
 function storeChooser(stores){return '<label>Destino<select name="storage_id">'+stores.map(s=>`<option value="${esc(s.id)}">${esc(s.name)} · ${esc(s.provider.toUpperCase())}</option>`).join('')+'</select></label>';}
 // Backups of the platform (the whole database) or of one organization (only its tables, into its own storage).
 function backupNow(orgId,stores){
@@ -233,14 +252,15 @@ function scheduleDialog(orgId,stores){
   async f=>{await api('/backup-schedules',{method:'POST',body:{storage_id:f.get('storage_id'),every_hours:Number(f.get('every_hours')),retention:Number(f.get('retention')),organization_id:orgId}});toast('Agendamento criado.');});
 }
 async function backupsPage(){
- const org=state.org,scope=org?'?organization_id='+encodeURIComponent(org):'';
+ const org=state.user.admin?state.org:state.user.organization_id,scope=org?'?organization_id='+encodeURIComponent(org):'';
+ const restores=org?(await api('/restores'+scope)).data:[];
  const [allStores,rows,schedules]=await Promise.all([api('/storages'),api('/backups'+scope),api('/backup-schedules'+scope)]).then(r=>r.map(x=>x.data));
  const mine=s=>org?s.organization_id===org:!s.organization_id,stores=allStores.filter(mine),storeName=id=>(allStores.find(x=>x.id===id)||{}).name||'—';
  const hours=h=>h%24?h+' horas':h===24?'Diário':(h/24)+' dias';
  action('＋ Backup agora',()=>backupNow(org,stores));
  const destinations=`<div class="card"><div class="card-head"><h3>Destinos dos backups</h3><button class="secondary" id="add-destination">＋ Conectar destino</button></div>${stores.length?table(['NOME','PROVEDOR',''],stores.map(s=>`<tr><td>${esc(s.name)}</td><td>${badge(s.provider.toUpperCase())}</td><td class="row-actions">${s.provider==='drive'?`<button class="secondary" data-reconnect="${esc(s.id)}">Reconectar com Google</button>`:''}<button class="secondary" data-test="${esc(s.id)}">Testar conexão</button><button class="danger" data-remove-storage="${esc(s.id)}">Remover</button></td></tr>`)):empty('Nenhum destino conectado','Conecte Google Drive, Cloudflare R2 ou S3 para guardar as cópias.')}<p class="help">${org?'Os destinos são as conexões de storage de '+esc(orgLabel())+'. A cópia leva só as tabelas dela.':'Destinos da plataforma recebem o backup do banco inteiro. Cada organização guarda os próprios backups no storage dela.'}</p></div>`;
  const scheduleCard=`<div class="card"><div class="card-head"><h3>Agendamentos</h3><button class="secondary" id="schedule">＋ Agendar</button></div>${schedules.length?table(['DESTINO','FREQUÊNCIA','RETENÇÃO','PRÓXIMA EXECUÇÃO',''],schedules.map(s=>`<tr><td>${esc(storeName(s.storage_id))}</td><td>${esc(hours(s.every_hours))}</td><td>${s.retention} ${s.retention===1?'cópia':'cópias'}</td><td>${esc(new Date(s.next_run).toLocaleString())}</td><td class="row-actions"><button class="danger" data-unschedule="${esc(s.id)}">Remover</button></td></tr>`)):empty('Sem agendamentos','Escolha a frequência e quantas cópias manter, de 1 a 7.')}</div>`;
- const history=`<div class="card"><div class="card-head"><h3>Histórico de backups</h3><button class="secondary" id="refresh-backups">Atualizar</button></div>${rows.length?table(['DATA','STATUS','DESTINO','TAMANHO','OBJETO / ERRO'],rows.slice(0,50).map(r=>`<tr><td>${esc(new Date(r.created_at).toLocaleString())}</td><td>${backupBadge(r)}</td><td>${esc(storeName(r.storage_id))}</td><td>${r.size?(r.size/1048576).toFixed(2)+' MB':'—'}</td><td title="${esc(r.object_key||r.error)}">${esc(r.object_key||r.error||'Aguardando processamento')}</td></tr>`)):empty('Ainda não há backups','Faça uma cópia agora ou crie um agendamento.')}</div>`;
+ const history=`<div class="card"><div class="card-head"><h3>Histórico de backups</h3><button class="secondary" id="refresh-backups">Atualizar</button></div>${rows.length?table(['DATA','STATUS','DESTINO','TAMANHO','OBSERVAÇÃO',''],rows.slice(0,50).map(r=>`<tr><td>${esc(new Date(r.created_at).toLocaleString())}</td><td>${backupBadge(r)}</td><td>${esc(storeName(r.storage_id))}</td><td>${r.size?(r.size/1048576).toFixed(2)+' MB':'—'}</td><td title="${esc(r.object_key||r.error)}">${esc(r.label||r.error||(r.status==='completed'?'Ponto de restauração':'Aguardando processamento'))}</td><td class="row-actions">${org&&r.status==='completed'?`<button class="secondary" data-restore="${esc(r.id)}">↺ Restaurar</button>`:''}</td></tr>`)):empty('Ainda não há backups','Faça uma cópia agora ou crie um agendamento.')}</div>`;
  let orgsCard='';
  if(!org){
   // Global view: every organization's schedule and latest copy, managed from here.
@@ -249,9 +269,14 @@ async function backupsPage(){
   orgsCard=`<div class="card"><div class="card-head"><h3>Backups das organizações</h3></div>${orgs.length?table(['ORGANIZAÇÃO','AGENDAMENTO','ÚLTIMO BACKUP',''],orgs.map(o=>{const sc=allSchedules.filter(x=>x.organization_id===o.id),lastRow=allRows.find(x=>x.organization_id===o.id);
    return `<tr><td><strong>${esc(o.name)}</strong></td><td>${sc.length?sc.map(x=>esc(hours(x.every_hours))+' · '+x.retention+(x.retention===1?' cópia':' cópias')).join('<br>'):'<span class="muted-text">Sem agendamento</span>'}</td><td>${lastRow?esc(new Date(lastRow.created_at).toLocaleString())+' '+backupBadge(lastRow):'—'}</td><td class="row-actions"><button class="secondary" data-org-backup="${esc(o.id)}">Backup agora</button><button class="secondary" data-org-schedule="${esc(o.id)}">＋ Agendar</button>${sc.map(x=>`<button class="danger" data-unschedule="${esc(x.id)}">Remover ${esc(hours(x.every_hours).toLowerCase())}</button>`).join('')}<button class="secondary" data-org-backups="${esc(o.id)}">Abrir →</button></td></tr>`;})):empty('Nenhuma organização','Crie uma organização para agendar os backups dela.')}<p class="help">Cada organização guarda os backups no próprio storage. Aqui você agenda, dispara e acompanha todos; em Abrir → vê o histórico completo dela.</p></div>`;
  }
- const restore=org?'<div class="card"><h3>O que vai na cópia</h3><p>As tabelas de '+esc(orgLabel())+' com os registros, as permissões das tabelas, as conexões de storage e a lista de usuários (sem as senhas). O arquivo é criptografado com a chave da plataforma; a restauração é feita pelo administrador global.</p></div>'
+ const restore=org?'<div class="card"><h3>O que vai na cópia</h3><p>As tabelas de '+esc(orgLabel())+' com os registros, as permissões das tabelas, as conexões de storage e a lista de usuários (sem as senhas). Cada backup concluído é um ponto de restauração: use ↺ Restaurar no histórico para voltar a ele. Para abrir os dados em planilha, use Exportar dados.</p></div>'
   :'<div class="card"><h3>Restauração segura</h3><p>Baixe o arquivo .setapi no provedor e use o comando de restauração em um banco vazio. A chave SETAPI_ENCRYPTION_KEY original é necessária para abrir a cópia. Guarde-a fora do servidor.</p><code>python -m app.restore backup.setapi</code><p class="help">O procedimento completo está no README. O painel não substitui o banco em uso.</p></div>';
- $('#content').innerHTML=destinations+scheduleCard+orgsCard+history+restore;
+ const RESTORE_STATUS={completed:['Concluída',true],failed:['Falhou',false],queued:['Na fila',false],running:['Em andamento',false]};
+ const restoresCard=org&&restores.length?`<div class="card"><div class="card-head"><h3>Restaurações</h3></div>${table(['PEDIDA EM','PONTO RESTAURADO','STATUS','RESULTADO'],restores.map(x=>{const [l,ok]=RESTORE_STATUS[x.status]||[x.status,false];const point=rows.find(r=>r.id===x.backup_id);return `<tr><td>${esc(new Date(x.created_at).toLocaleString())}</td><td>${point?esc(new Date(point.created_at).toLocaleString()):'—'}</td><td>${badge(l,ok)}</td><td>${esc(x.error||(x.status==='completed'?'Estado anterior salvo como "Antes da restauração".':'Aguardando o worker'))}</td></tr>`;}))}</div>`:'';
+ $('#content').innerHTML=destinations+scheduleCard+orgsCard+restoresCard+history+restore;
+ document.querySelectorAll('[data-restore]').forEach(b=>b.onclick=()=>{const point=rows.find(r=>r.id===b.dataset.restore);
+  modal('Restaurar ponto de '+new Date(point.created_at).toLocaleString(),'<div class="steps"><div class="step"><b>1</b><span>O estado atual de '+esc(orgLabel())+' é salvo antes, como backup "Antes da restauração". Dá para voltar atrás.</span></div><div class="step"><b>2</b><span>Todas as tabelas da organização voltam a ser exatamente as deste ponto: registros, campos e permissões. Tabelas criadas depois dele são removidas.</span></div><div class="step"><b>3</b><span>Tudo acontece numa única transação: se algo falhar, nada muda.</span></div></div>'+field('confirm','Para confirmar, digite RESTAURAR'),
+   async f=>{if(f.get('confirm').trim().toUpperCase()!=='RESTAURAR')throw Error('Digite RESTAURAR para confirmar.');await api('/backups/'+point.id+'/restore',{method:'POST'});toast('Restauração na fila. Acompanhe em Restaurações.');},'Restaurar');});
  $('#add-destination').onclick=()=>storageDialog().catch(e=>toast(e.message));storageActions();
  $('#refresh-backups').onclick=()=>render();$('#schedule').onclick=()=>scheduleDialog(org,stores);
  const orgStores=id=>allStores.filter(s=>s.organization_id===id);

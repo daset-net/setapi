@@ -136,3 +136,13 @@ $$;
 -- Organization backups: only that organization's tables, stored in its own storage. NULL = the whole platform.
 ALTER TABLE setapi.schedules ADD COLUMN IF NOT EXISTS organization_id uuid REFERENCES setapi.organizations(id);
 ALTER TABLE setapi.backups ADD COLUMN IF NOT EXISTS organization_id uuid REFERENCES setapi.organizations(id);
+-- Organization restore points: restoring saves the current state first ("Antes da restauração").
+ALTER TABLE setapi.backups ADD COLUMN IF NOT EXISTS label text;
+CREATE TABLE IF NOT EXISTS setapi.restores (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ organization_id uuid NOT NULL REFERENCES setapi.organizations(id),
+ backup_id uuid NOT NULL REFERENCES setapi.backups(id),
+ safety_backup_id uuid REFERENCES setapi.backups(id),
+ status text NOT NULL DEFAULT 'queued', error text, requested_by uuid,
+ created_at timestamptz NOT NULL DEFAULT now(), finished_at timestamptz
+);

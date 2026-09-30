@@ -293,7 +293,13 @@ Na API: `GET /api/platform/branding` (público) e `GET`/`PUT /api/platform/setti
 - **Plataforma → Backups**: cópia criptografada do banco inteiro, enviada para um destino da plataforma. O cartão **Backups das organizações** mostra o agendamento e o último backup de cada organização, com Backup agora, Agendar e Remover.
 - **Organização → Backups**: cópia só das tabelas dela (com os registros), das permissões das tabelas, das conexões de storage e da lista de usuários sem senhas, enviada para o storage da própria organização.
 - Cada agendamento mantém de **1 a 7** cópias; as mais antigas são excluídas do provedor depois de cada backup concluído.
-- Na API: `organization_id` em `POST /api/backups` e `POST /api/backup-schedules`; `GET /api/backups?organization_id=…` ou `?all=true`.
+- O **administrador da organização** também vê a página Backups dela: faz backup, agenda e restaura. Ele nunca vê os backups da plataforma nem os de outra organização.
+- **Pontos de restauração**: cada backup concluído da organização tem **↺ Restaurar**. O worker primeiro salva o estado atual como backup "Antes da restauração"; depois, numa única transação (`psql --single-transaction`), apaga as tabelas atuais da organização e recria as do ponto escolhido, com registros, campos, índices e permissões. Se algo falhar, nada muda. O arquivo precisa ser daquela organização e conter só tabelas dela.
+- Na API: `organization_id` em `POST /api/backups` e `POST /api/backup-schedules`; `GET /api/backups?organization_id=…` ou `?all=true`; `POST /api/backups/{id}/restore` e `GET /api/restores`.
+
+### Exportar dados
+
+**Exportar dados** (administrador da organização, ou o global dentro dela) baixa todos os registros de todas as tabelas da organização, ou de uma só: **XLSX** (uma aba por tabela), **CSV** (um `.csv` por tabela num `.zip`, UTF-8 com BOM para o Excel) ou **JSON** (um arquivo, tipos preservados). Na API: `GET /api/export?format=xlsx|csv|json&table=…`.
 
 ### Pesquisa nos registros
 
@@ -322,7 +328,7 @@ O Google pode expirar refresh tokens de aplicativos externos em modo Testing ap�
 
 ### Cloudflare R2 só com o token
 
-Em **Conectar storage → Cloudflare R2 · só com o token**, cole um token de API da conta com a permissão *Workers R2 Storage Write* (no painel da Cloudflare: R2 → Gerenciar tokens de API). O SETAPI descobre a conta, cria o bucket (`setapi-<organização>-xxxxxx`, ou usa o que você informar) e deriva as chaves S3 do token, como a Cloudflare documenta: Access Key ID é o id do token e Secret Access Key é o SHA-256 do valor. O token em si não é guardado. Na API: `POST /api/integrations/cloudflare/connect`.
+Em **Conectar storage → Cloudflare R2 · só com o token** (a única opção de R2 no painel; conexões antigas com chaves manuais continuam funcionando), cole um token de API da conta com a permissão *Workers R2 Storage Write* (no painel da Cloudflare: R2 → Gerenciar tokens de API). O SETAPI descobre a conta, cria o bucket (`setapi-<organização>-xxxxxx`, ou usa o que você informar) e deriva as chaves S3 do token, como a Cloudflare documenta: Access Key ID é o id do token e Secret Access Key é o SHA-256 do valor. O token em si não é guardado. Na API: `POST /api/integrations/cloudflare/connect`.
 
 S3/R2 usam campos individuais no painel: bucket, região, endpoint e chaves de acesso. Para outros provedores S3 compatíveis, use `endpoint_url` HTTPS. Outros protocolos exigem um adaptador em `app/storage.py`.
 

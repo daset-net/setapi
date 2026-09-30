@@ -6,9 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
-from . import db, storage, platform_settings
+from . import db, storage, platform_settings, tables
 from .config import settings
-from .security import admin, principal, is_admin, audit, can_manage_storage, storage_manager
+from .security import admin, builder, principal, is_admin, audit, can_manage_storage, storage_manager
 
 router = APIRouter(prefix='/api', tags=['Storage and backups'])
 
@@ -155,6 +155,11 @@ class BackupCreate(BaseModel):
     organization_id: UUID | None = BACKUP_ORG
 
 
+def backup_scope(conn, user, organization_id):
+    """Whose backups: the global administrator picks (None = platform); an organization administrator always gets their own."""
+    return organization_id if is_admin(user) else tables.context(conn, user, organization_id)
+
+
 def backup_storage(conn, storage_id, organization_id):
     # The platform backup is the whole database: only platform storage receives it.
     # An organization backup holds only its tables and goes to that organization's storage.
@@ -164,8 +169,9 @@ def backup_storage(conn, storage_id, organization_id):
 
 
 @router.post('/backups', status_code=202)
-def queue_backup(body: BackupCreate, user=Depends(admin)):
+def queue_backup(body: BackupCreate, user=Depends(builder)):
     with db.connection() as conn:
+        body.organization_id = backup_scope(conn, user, body.organization_id)
         backup_storage(conn, body.storage_id, body.organization_id)
         pending = conn.execute("SELECT count(*) AS n FROM setapi.backups WHERE status IN ('queued','running')").fetchone()['n']
         if pending >= 5:
@@ -178,8 +184,9 @@ def queue_backup(body: BackupCreate, user=Depends(admin)):
 
 @router.get('/backups')
 def list_backups(organization_id: UUID | None = Query(None, description='Backups of this organization; omit for the platform backups.'),
-                 all: bool = Query(False, description='Every backup: the platform and all organizations.'), user=Depends(admin)):
+                 all: bool = Query(False, description='Every backup: the platform and all organizations.'), user=Depends(builder)):
     with db.connection() as conn:
+        organization_id, all = backup_scope(conn, user, organization_id), all and is_admin(user)
         return {'data': conn.execute('SELECT * FROM setapi.backups WHERE %s OR organization_id IS NOT DISTINCT FROM %s ORDER BY created_at DESC LIMIT 200',
                                      (all, organization_id)).fetchall()}
 
@@ -192,8 +199,9 @@ class ScheduleCreate(BaseModel):
 
 
 @router.post('/backup-schedules', status_code=201)
-def create_schedule(body: ScheduleCreate, user=Depends(admin)):
+def create_schedule(body: ScheduleCreate, user=Depends(builder)):
     with db.connection() as conn:
+        body.organization_id = backup_scope(conn, user, body.organization_id)
         backup_storage(conn, body.storage_id, body.organization_id)
         row = conn.execute('INSERT INTO setapi.schedules(storage_id,every_hours,retention,organization_id) VALUES(%s,%s,%s,%s) RETURNING *',
             (body.storage_id, body.every_hours, body.retention, body.organization_id)).fetchone()
@@ -203,17 +211,43 @@ def create_schedule(body: ScheduleCreate, user=Depends(admin)):
 
 @router.get('/backup-schedules')
 def list_schedules(organization_id: UUID | None = Query(None, description='Schedules of this organization; omit for the platform schedules.'),
-                   all: bool = Query(False, description='Every schedule: the platform and all organizations.'), user=Depends(admin)):
+                   all: bool = Query(False, description='Every schedule: the platform and all organizations.'), user=Depends(builder)):
     with db.connection() as conn:
+        organization_id, all = backup_scope(conn, user, organization_id), all and is_admin(user)
         return {'data': conn.execute('SELECT * FROM setapi.schedules WHERE %s OR organization_id IS NOT DISTINCT FROM %s ORDER BY next_run',
                                      (all, organization_id)).fetchall()}
 
 
 @router.delete('/backup-schedules/{schedule_id}', status_code=204)
-def delete_schedule(schedule_id: UUID, user=Depends(admin)):
+def delete_schedule(schedule_id: UUID, user=Depends(builder)):
     with db.connection() as conn:
+        owner = conn.execute('SELECT organization_id FROM setapi.schedules WHERE id=%s', (schedule_id,)).fetchone()
+        if not owner or (not is_admin(user) and owner['organization_id'] != user.get('tenant_id')):
+            raise HTTPException(404, 'Schedule not found')
         conn.execute('DELETE FROM setapi.schedules WHERE id=%s', (schedule_id,))
         audit(conn, user, 'backup.schedule.delete', str(schedule_id))
+
+
+@router.post('/backups/{backup_id}/restore', status_code=202)
+def queue_restore(backup_id: UUID, user=Depends(builder)):
+    """Bring the organization's tables back to this backup. The current state is saved first as a backup."""
+    with db.connection() as conn:
+        backup = conn.execute("SELECT * FROM setapi.backups WHERE id=%s AND status='completed'", (backup_id,)).fetchone()
+        if not backup or backup['organization_id'] is None or backup_scope(conn, user, backup['organization_id']) != backup['organization_id']:
+            raise HTTPException(404, 'Restore point not found')
+        if conn.execute("SELECT 1 FROM setapi.restores WHERE organization_id=%s AND status IN ('queued','running')", (backup['organization_id'],)).fetchone():
+            raise HTTPException(409, 'Já existe uma restauração em andamento para esta organização.')
+        row = conn.execute('INSERT INTO setapi.restores(organization_id,backup_id,requested_by) VALUES(%s,%s,%s) RETURNING *',
+                           (backup['organization_id'], backup_id, user['id'])).fetchone()
+        audit(conn, user, 'backup.restore', str(backup_id), {'organization_id': str(backup['organization_id'])})
+    return row
+
+
+@router.get('/restores')
+def list_restores(organization_id: UUID | None = Query(None, description='Restores of this organization.'), user=Depends(builder)):
+    with db.connection() as conn:
+        organization_id = backup_scope(conn, user, organization_id)
+        return {'data': conn.execute('SELECT * FROM setapi.restores WHERE organization_id=%s ORDER BY created_at DESC LIMIT 50', (organization_id,)).fetchall()}
 
 
 @router.delete('/files/{file_id}',status_code=204)

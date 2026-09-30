@@ -228,8 +228,10 @@ def test_organization_administrator_in_the_panel(admin_client):
     assert panel.post('/api/tables', json={'name': name}).status_code == 201
     assert name in names(c, a)
     # Global-only areas stay closed.
-    for path in ('/api/users', '/api/organizations/' + a + '/x', '/api/backups', '/api/mail/config', '/api/status'):
+    for path in ('/api/users', '/api/organizations/' + a + '/x', '/api/mail/config', '/api/status'):
         assert panel.get(path).status_code in (403, 404, 405)
+    # Backups: only the organization's own, never the platform's or everyone's.
+    assert panel.get('/api/backups', params={'all': 'true'}).json()['data'] == [x for x in c.get('/api/backups', params={'organization_id': a}).json()['data']]
     # Revoking the role takes effect immediately.
     assert c.put(f'/api/users/{user_id}/access', json={'tenant_id': a, 'org_admin': False}).status_code == 200
     assert panel.get('/api/auth/me').status_code == 401

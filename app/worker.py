@@ -4,6 +4,7 @@ import signal
 import threading
 from . import db, storage, mail
 from .backup import create_backup
+from . import org_restore
 
 log = logging.getLogger('setapi.worker')
 stopping = threading.Event()
@@ -62,6 +63,29 @@ def run_backup():
     return True
 
 
+def run_restore():
+    with db.connection() as conn:
+        # Shares the backup lock: a restore never runs beside a backup.
+        if not conn.execute('SELECT pg_try_advisory_xact_lock(73288102) AS acquired').fetchone()['acquired']:
+            return False
+        conn.execute("UPDATE setapi.restores SET status='failed',error='Worker interrupted; request the restore again',finished_at=now() WHERE status='running'")
+        job = conn.execute("SELECT * FROM setapi.restores WHERE status='queued' ORDER BY created_at LIMIT 1").fetchone()
+        if not job:
+            return False
+        with db.connection() as progress:
+            progress.execute("UPDATE setapi.restores SET status='running' WHERE id=%s", (job['id'],))
+        try:
+            safety = org_restore.restore(job)
+            conn.execute("UPDATE setapi.restores SET status='completed',safety_backup_id=%s,finished_at=now() WHERE id=%s", (safety, job['id']))
+            mail.notify_organization(conn, job['organization_id'], 'Restauração concluída', 'As tabelas da organização voltaram ao ponto de restauração escolhido. O estado anterior foi salvo como backup "Antes da restauração".')
+        except Exception as exc:
+            message = str(exc) if isinstance(exc, org_restore.RestoreError) else 'A restauração falhou; os dados continuam como estavam.'
+            log.error('Restore %s failed (%s)', job['id'], type(exc).__name__)
+            conn.execute("UPDATE setapi.restores SET status='failed',error=%s,finished_at=now() WHERE id=%s", (message, job['id']))
+            mail.notify_admins(conn, 'Restauração falhou', f'A restauração {job["id"]} falhou: {message}')
+    return True
+
+
 def retention():
     with db.connection() as conn:
         if not conn.execute('SELECT pg_try_advisory_xact_lock(73288103) AS acquired').fetchone()['acquired']:
@@ -78,6 +102,7 @@ def backup_loop():
         try:
             schedule_jobs()
             run_backup()
+            run_restore()
             retention()
         except Exception as exc:
             log.error('Backup cycle failed (%s)', type(exc).__name__)

@@ -176,3 +176,6 @@ dialog{max-width:640px;padding:32px;border-radius:22px}
 .pager{flex-wrap:wrap;margin:14px 0}.pager span{margin-right:auto;font-size:13.5px;font-weight:600;color:#50635a}.pager button{padding:9px 14px;font-size:13px}
 .muted-text{color:var(--muted)}
 td.row-actions{max-width:none;overflow:visible;white-space:normal;text-align:right}td.row-actions button{margin:3px 0 3px 6px}
+.export-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}.export-card{display:flex;flex-direction:column;margin:0}.export-card p{flex:1}.export-card button{align-self:flex-start}
+.export-tag{align-self:flex-start;font-size:11px;font-weight:700;letter-spacing:.12em;padding:6px 10px;border-radius:8px;background:var(--tint);color:color-mix(in srgb,var(--green) 75%,#000);margin-bottom:14px}
+@media(max-width:1000px){.export-grid{grid-template-columns:1fr}}
