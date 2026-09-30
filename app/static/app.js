@@ -156,12 +156,16 @@ async function tokensPage(){
 async function storageDialog(){
  const google=await api('/integrations/google/config');
  modal('Conectar storage',field('name','Nome da conexão','Google Drive')+
-  '<label>Provedor<select name="provider" id="provider"><option value="drive">Google Drive</option><option value="s3">S3 compatível</option><option value="r2">Cloudflare R2</option></select></label><div id="provider-fields"></div>',
+  '<label>Provedor<select name="provider" id="provider"><option value="drive">Google Drive</option><option value="r2-token">Cloudflare R2 · só com o token</option><option value="r2">Cloudflare R2 · chaves manuais</option><option value="s3">S3 compatível</option></select></label><div id="provider-fields"></div>',
   async f=>{
    const provider=f.get('provider');
    if(provider==='drive'){
     const data=await api('/integrations/google/connect',{method:'POST',body:{name:f.get('name'),organization_id:state.user.admin?state.org:null}});
     window.location.assign(data.url);return false;
+   }
+   if(provider==='r2-token'){
+    const made=await api('/integrations/cloudflare/connect',{method:'POST',body:{name:f.get('name'),api_token:f.get('api_token'),account_id:f.get('account_id')||'',bucket:f.get('bucket')||'',organization_id:state.user.admin?state.org:null}});
+    toast('Cloudflare R2 conectado. Bucket '+made.bucket+' pronto.');return;
    }
    const config=Object.fromEntries(['bucket','region','endpoint_url','access_key_id','secret_access_key'].map(k=>[k,f.get(k)||'']));
    await api('/storages',{method:'POST',body:{name:f.get('name'),provider,config,organization_id:state.user.admin?state.org:null}});
@@ -169,9 +173,15 @@ async function storageDialog(){
  const update=()=>{
   const provider=$('#provider').value;
   $('#modal-submit').hidden=provider==='drive'&&!google.configured;
-  $('#modal-submit').textContent=provider==='drive'?'Conectar Google':'Salvar conexão';
+  $('#modal-submit').textContent=provider==='drive'?'Conectar Google':provider==='r2-token'?'Conectar R2':'Salvar conexão';
+  const name=$('#modal-fields [name=name]');if(['Google Drive','Cloudflare R2','S3'].includes(name.value))name.value={drive:'Google Drive',s3:'S3'}[provider]||'Cloudflare R2';
   if(provider==='drive'){
    $('#provider-fields').innerHTML='<div class="connection"><span><strong>Google Drive</strong><small>Entre com sua conta Google e autorize o SETAPI.</small></span></div><p>'+(inOrg()?'Uma pasta exclusiva será criada no Drive escolhido para os arquivos de '+esc(orgLabel())+'.':'Uma pasta exclusiva será criada para os backups da plataforma.')+'</p>'+(google.configured?'':'<p class="help">Conexão com Google indisponível: '+(state.user.admin?'informe o Client ID e o Client Secret em Configurações → Aplicativo Google.':'peça ao administrador da plataforma para configurar o aplicativo Google.')+'</p>');
+  }else if(provider==='r2-token'){
+   $('#provider-fields').innerHTML='<div class="steps"><div class="step"><b>1</b><span>No painel da Cloudflare, abra R2 → Gerenciar tokens de API → Criar token de API da conta.</span></div><div class="step"><b>2</b><span>Escolha a permissão <strong>Administrador de leitura e gravação</strong> (Workers R2 Storage Write) e crie.</span></div><div class="step"><b>3</b><span>Cole abaixo o valor do token. O SETAPI cria o bucket e as chaves S3 sozinho.</span></div></div>'+
+    field('api_token','Token de API da Cloudflare','','password')+
+    '<details><summary>Opções</summary><label>Bucket (vazio: criar um novo)<input name="bucket" placeholder="setapi-…" spellcheck="false"></label><label>Account ID (só se o token acessar mais de uma conta)<input name="account_id" spellcheck="false"></label></details>'+
+    '<p class="help">O token não é guardado: o SETAPI guarda só as chaves S3 derivadas dele, criptografadas. Revogar o token na Cloudflare corta o acesso.</p>';
   }else{
    $('#provider-fields').innerHTML=field('bucket','Bucket')+field('region','Região',provider==='r2'?'auto':'us-east-1')+
     '<label>Endpoint HTTPS'+(provider==='s3'?' (opcional para AWS)':'')+'<input name="endpoint_url" type="url" placeholder="'+(provider==='r2'?'https://ACCOUNT_ID.r2.cloudflarestorage.com':'https://s3.exemplo.com')+'" '+(provider==='r2'?'required':'')+'></label>'+field('access_key_id','Access Key ID')+field('secret_access_key','Secret Access Key','','password')+'<p class="help">As credenciais são criptografadas no banco.</p>';

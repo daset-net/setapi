@@ -309,6 +309,10 @@ A integração usa o escopo `drive.file`, limitado aos arquivos autorizados/cria
 
 O Google pode expirar refresh tokens de aplicativos externos em modo Testing após sete dias. Para uso contínuo, ajuste o status de publicação e os requisitos de consentimento do seu projeto conforme a documentação Google. O fluxo usa state de uso único com validade de dez minutos, vinculado à sessão administrativa, além de PKCE. Tokens e códigos não são exibidos pelo painel; os logs de acesso do Uvicorn estão desativados para não registrar o código no callback. Configure também seu proxy para não registrar parâmetros desse endpoint.
 
+### Cloudflare R2 só com o token
+
+Em **Conectar storage → Cloudflare R2 · só com o token**, cole um token de API da conta com a permissão *Workers R2 Storage Write* (no painel da Cloudflare: R2 → Gerenciar tokens de API). O SETAPI descobre a conta, cria o bucket (`setapi-<organização>-xxxxxx`, ou usa o que você informar) e deriva as chaves S3 do token, como a Cloudflare documenta: Access Key ID é o id do token e Secret Access Key é o SHA-256 do valor. O token em si não é guardado. Na API: `POST /api/integrations/cloudflare/connect`.
+
 S3/R2 usam campos individuais no painel: bucket, região, endpoint e chaves de acesso. Para outros provedores S3 compatíveis, use `endpoint_url` HTTPS. Outros protocolos exigem um adaptador em `app/storage.py`.
 
 As conexões são cadastradas antes do teste; o botão **Testar conexão** confirma leitura do bucket/pasta. O teste completo de escrita é um upload real. Credenciais nunca são devolvidas pela API de listagem. Uma conexão existente pode ter suas credenciais atualizadas por `PUT /api/storages/{id}`; mudar bucket ou pasta exige nova conexão para preservar referências antigas.

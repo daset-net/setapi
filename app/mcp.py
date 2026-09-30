@@ -49,7 +49,7 @@ def function_name(op, path, method):
     return operation[:-len(suffix)] if operation.endswith(suffix) and len(operation) > len(suffix) else operation
 
 
-AREAS = {'/api/integrations/google/': 'google_', '/api/mail/': 'mail_'}
+AREAS = {'/api/integrations/google/': 'google_', '/api/integrations/cloudflare/': 'cloudflare_', '/api/mail/': 'mail_'}
 
 
 def tool_name(function, path, taken):

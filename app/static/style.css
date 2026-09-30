@@ -82,3 +82,4 @@ nav button.active::before{content:"";position:absolute;left:0;top:9px;bottom:9px
 .card .split-row strong,.card .split-row code{overflow-wrap:anywhere;text-align:right}
 .swatch{width:22px;height:22px;border-radius:6px;border:1px solid var(--border)}input[type=color]{height:46px;padding:4px;cursor:pointer}
 .help.warn{color:#ad443b}
+details{margin:14px 0}summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)}

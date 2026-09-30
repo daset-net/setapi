@@ -28,6 +28,7 @@ from .accounts import router as accounts_router
 from .organizations import router as organizations_router
 from .policies import router as policies_router
 from .platform_settings import router as platform_router
+from .cloudflare_r2 import router as cloudflare_router
 from . import platform_settings
 from . import policies
 from fastapi.exceptions import RequestValidationError
@@ -164,6 +165,7 @@ app.include_router(accounts_router)
 app.include_router(organizations_router)
 app.include_router(policies_router)
 app.include_router(platform_router)
+app.include_router(cloudflare_router)
 
 
 @app.websocket('/ws')
