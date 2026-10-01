@@ -353,6 +353,19 @@ def revoke_token(token_id: UUID, user=Depends(admin)):
         audit(conn, user, 'token.revoke', str(token_id))
 
 
+@router.delete('/tokens/{token_id}/permanent', status_code=204)
+def delete_token(token_id: UUID, user=Depends(admin)):
+    """Remove a revoked or expired API token from the list. An active token must be revoked first."""
+    with db.connection() as conn:
+        row = conn.execute("SELECT name,(revoked_at IS NOT NULL OR expires_at<=now()) AS ended FROM setapi.tokens WHERE id=%s AND kind='api'", (token_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, 'Token not found')
+        if not row['ended']:
+            raise HTTPException(409, 'Revogue o token antes de excluí-lo')
+        conn.execute('DELETE FROM setapi.tokens WHERE id=%s', (token_id,))
+        audit(conn, user, 'token.delete', str(token_id), {'name': row['name']})
+
+
 @router.get('/audit')
 def audit_log(organization_id: UUID | None = Query(None, description='Only activity of this organization: its users, and changes to its tables and storage.'), user=Depends(admin)):
     with db.connection() as conn:

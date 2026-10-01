@@ -316,3 +316,21 @@ def test_global_administrator_can_show_a_token_again(admin_client):
     # Login sessions are never stored.
     with db.connection() as conn:
         assert conn.execute("SELECT count(*) AS n FROM setapi.tokens WHERE kind='session' AND secret_encrypted IS NOT NULL").fetchone()['n'] == 0
+
+
+def test_revoked_token_can_be_deleted(admin_client):
+    c = admin_client
+    a = org(c)
+    user = c.post('/api/users', json={'email': uuid4().hex[:8] + '@org.test', 'password': 'Admin-password-123', 'tenant_id': a, 'org_admin': True}).json()
+    created = c.post('/api/tokens', json={'name': 'velho', 'user_id': user['id']}).json()
+    # An active token must be revoked first.
+    assert c.delete(f"/api/tokens/{created['id']}/permanent").status_code == 409
+    assert c.delete(f"/api/tokens/{created['id']}").status_code == 204
+    assert c.delete(f"/api/tokens/{created['id']}/permanent").status_code == 204
+    assert all(t['id'] != created['id'] for t in c.get('/api/tokens').json()['data'])
+    assert c.delete(f"/api/tokens/{created['id']}/permanent").status_code == 404
+    assert any(e['action'] == 'token.delete' for e in c.get('/api/audit').json()['data'])
+    # Only the global administrator deletes.
+    other = c.post('/api/tokens', json={'name': 'outro', 'user_id': user['id']}).json()
+    c.delete(f"/api/tokens/{other['id']}")
+    assert TestClient(app).delete(f"/api/tokens/{other['id']}/permanent", headers={'Authorization': 'Bearer ' + created['token']}).status_code == 401
