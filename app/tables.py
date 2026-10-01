@@ -220,7 +220,36 @@ def manage(conn,table):
     postgrest.protect(conn, table)
 
 
+def is_managed(conn,table):
+    return bool(conn.execute("SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='data' AND c.relname=%s AND t.tgname='setapi_changes' AND t.tgenabled<>'D'",(table,)).fetchone())
+
+
+def adopt(conn,table):
+    """Give a table created outside the normal flow a UUID id, timestamps and change tracking."""
+    cols={c['name']:c['type'] for c in columns(conn,table)}
+    if 'id' in cols and cols['id']!='uuid':raise HTTPException(422,'Existing id must be UUID; migrate its relationships before adoption')
+    if 'id' not in cols:
+        conn.execute(sql.SQL('ALTER TABLE data.{} ADD COLUMN id uuid NOT NULL DEFAULT gen_random_uuid() UNIQUE').format(sql.Identifier(table)))
+    for col in ('created_at','updated_at'):
+        if col not in cols:
+            conn.execute(sql.SQL('ALTER TABLE data.{} ADD COLUMN {} timestamptz NOT NULL DEFAULT now()').format(sql.Identifier(table),sql.Identifier(col)))
+    conn.execute(sql.SQL('ALTER TABLE data.{} ALTER COLUMN id SET NOT NULL').format(sql.Identifier(table)))
+    unique_name='su_'+__import__('hashlib').sha256(table.encode()).hexdigest()[:20]
+    conn.execute(sql.SQL('CREATE UNIQUE INDEX IF NOT EXISTS {} ON data.{} (id)').format(sql.Identifier(unique_name),sql.Identifier(table)))
+    manage(conn,table)
+
+
+def ensure_managed(conn,table):
+    """Auto-adopt a table on first use instead of requiring a manual step, when it is safe to do so."""
+    if is_managed(conn,table):return
+    cols={c['name']:c['type'] for c in columns(conn,table)}
+    if 'id' in cols and cols['id']!='uuid':return
+    adopt(conn,table)
+
+
 def require_managed(conn,table):
     physical_name(table)
-    if not conn.execute("SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='data' AND c.relname=%s AND t.tgname='setapi_changes' AND t.tgenabled<>'D'",(table,)).fetchone():
-        raise HTTPException(409,'Adopt this table before using its data API')
+    if not is_managed(conn,table):
+        ensure_managed(conn,table)
+        if not is_managed(conn,table):
+            raise HTTPException(409,'This table has an existing id column that is not UUID; migrate it manually before using its data API')

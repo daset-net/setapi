@@ -85,6 +85,9 @@ def list_tables(organization_id: UUID | None = ORG, user=Depends(principal)):
         for physical in chosen:
             name = tables.logical(physical)
             if not allowed(user,name,'read',physical):continue
+            if is_admin(user) or is_org_admin(user):
+                try:tables.ensure_managed(conn,physical)
+                except HTTPException:pass
             try:
                 readable=policies.fields(conn,physical,user,'read')
             except HTTPException as exc:
@@ -439,19 +442,10 @@ class Adopt(BaseModel):
 
 @router.post('/tables/{table}/adopt')
 def adopt_table(table:str,body:Adopt,organization_id: UUID | None = ORG,user=Depends(builder)):
+    """Kept for manual use; tables are now adopted automatically on first access."""
     if body.confirm!=table:raise HTTPException(422,'Confirm the exact table name')
     with db.connection() as conn:
         physical=tables.target(conn,user,table,organization_id,structure=True)
-        cols={c['name']:c['type'] for c in tables.columns(conn,physical)}
-        if 'id' in cols and cols['id']!='uuid':raise HTTPException(422,'Existing id must be UUID; migrate its relationships before adoption')
-        if 'id' not in cols:
-            conn.execute(sql.SQL('ALTER TABLE data.{} ADD COLUMN id uuid NOT NULL DEFAULT gen_random_uuid() UNIQUE').format(sql.Identifier(physical)))
-        for col in ('created_at','updated_at'):
-            if col not in cols:
-                conn.execute(sql.SQL('ALTER TABLE data.{} ADD COLUMN {} timestamptz NOT NULL DEFAULT now()').format(sql.Identifier(physical),sql.Identifier(col)))
-        conn.execute(sql.SQL('ALTER TABLE data.{} ALTER COLUMN id SET NOT NULL').format(sql.Identifier(physical)))
-        unique_name='su_'+__import__('hashlib').sha256(physical.encode()).hexdigest()[:20]
-        conn.execute(sql.SQL('CREATE UNIQUE INDEX IF NOT EXISTS {} ON data.{} (id)').format(sql.Identifier(unique_name),sql.Identifier(physical)))
-        tables.manage(conn,physical)
+        tables.adopt(conn,physical)
         audit(conn,user,'table.adopt',table,{'organization_id':str(organization_id) if organization_id else None})
     return {'ok':True}

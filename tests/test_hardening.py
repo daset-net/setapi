@@ -187,7 +187,8 @@ def test_schema_adoption_indexes_and_type_changes_are_transactional(admin_client
     with db.connection() as conn:
         conn.execute(sql.SQL('CREATE TABLE data.{}(title text)').format(sql.Identifier(table)))
         conn.execute(sql.SQL('INSERT INTO data.{} VALUES(%s)').format(sql.Identifier(table)),('123',))
-    assert c.get('/api/data/'+table).status_code==409
+    # A table created outside the normal flow is adopted automatically on first use, no manual step needed.
+    assert c.get('/api/data/'+table).json()['total']==1
     assert c.post('/api/tables/'+table+'/adopt',json={'confirm':'wrong'}).status_code==422
     assert c.post('/api/tables/'+table+'/adopt',json={'confirm':table}).status_code==200
     assert c.get('/api/data/'+table).json()['total']==1
@@ -198,6 +199,15 @@ def test_schema_adoption_indexes_and_type_changes_are_transactional(admin_client
     assert c.get('/api/data/'+table).json()['data'][0]['title']==123
     assert c.put('/api/tables/'+table+'/columns/title',json={'type':'uuid','nullable':True,'confirm':table+'.title'}).status_code in (422,503)
     assert c.get('/api/data/'+table).json()['data'][0]['title']==123
+
+
+def test_table_with_non_uuid_id_is_not_auto_adopted(admin_client):
+    from psycopg import sql
+    c=admin_client;table=name()
+    with db.connection() as conn:
+        conn.execute(sql.SQL('CREATE TABLE data.{}(id integer PRIMARY KEY, title text)').format(sql.Identifier(table)))
+    assert c.get('/api/data/'+table).status_code==409
+    assert c.post('/api/tables/'+table+'/adopt',json={'confirm':table}).status_code==422
 
 
 def test_totp_rfc_vector_and_request_size(admin_client):
