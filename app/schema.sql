@@ -66,6 +66,8 @@ CREATE TABLE IF NOT EXISTS setapi.mail_queue (
  attempts integer NOT NULL DEFAULT 0, next_attempt timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS tokens_user_idx ON setapi.tokens(user_id);
+-- API tokens keep an encrypted copy of the secret so the global administrator can show it again.
+ALTER TABLE setapi.tokens ADD COLUMN IF NOT EXISTS secret_encrypted text;
 CREATE INDEX IF NOT EXISTS files_owner_idx ON setapi.files(owner_id);
 CREATE INDEX IF NOT EXISTS backups_status_idx ON setapi.backups(status,created_at);
 CREATE INDEX IF NOT EXISTS schedules_due_idx ON setapi.schedules(next_run) WHERE enabled;

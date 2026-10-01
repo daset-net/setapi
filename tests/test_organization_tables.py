@@ -289,3 +289,30 @@ def test_organization_administrator_needs_an_organization(admin_client):
     assert c.post('/api/users', json={'email': uuid4().hex[:8] + '@x.test', 'password': 'Password-123456', 'org_admin': True}).status_code == 422
     assert c.post('/api/users', json={'email': uuid4().hex[:8] + '@x.test', 'password': 'Password-123456', 'org_admin': True,
                                       'tenant_id': org(c), 'audience': 'app'}).status_code == 422
+
+
+def test_global_administrator_can_show_a_token_again(admin_client):
+    c = admin_client
+    a = org(c)
+    user = c.post('/api/users', json={'email': uuid4().hex[:8] + '@org.test', 'password': 'Admin-password-123', 'tenant_id': a, 'org_admin': True}).json()
+    created = c.post('/api/tokens', json={'name': 'app', 'user_id': user['id']}).json()
+    listed = next(t for t in c.get('/api/tokens').json()['data'] if t['id'] == created['id'])
+    assert listed['revealable'] is True and listed['org_admin'] is True
+    shown = c.get(f"/api/tokens/{created['id']}/secret")
+    assert shown.status_code == 200 and shown.json()['token'] == created['token']
+    assert shown.headers['cache-control'] == 'no-store'
+    assert any(e['action'] == 'token.reveal' and e['resource'] == str(created['id']) for e in c.get('/api/audit').json()['data'])
+    # An API token, even the global administrator's, never reads other tokens.
+    global_token = c.post('/api/tokens', json={'name': 'global', 'admin': True}).json()['token']
+    api = TestClient(app)
+    assert api.get(f"/api/tokens/{created['id']}/secret", headers={'Authorization': 'Bearer ' + global_token}).status_code == 403
+    assert api.get(f"/api/tokens/{created['id']}/secret", headers={'Authorization': 'Bearer ' + created['token']}).status_code == 403
+    # Tokens from before the feature cannot be shown; revoked ones are gone.
+    with db.connection() as conn:
+        conn.execute('UPDATE setapi.tokens SET secret_encrypted=NULL WHERE id=%s', (created['id'],))
+    assert c.get(f"/api/tokens/{created['id']}/secret").status_code == 409
+    assert c.delete(f"/api/tokens/{created['id']}").status_code == 204
+    assert c.get(f"/api/tokens/{created['id']}/secret").status_code == 404
+    # Login sessions are never stored.
+    with db.connection() as conn:
+        assert conn.execute("SELECT count(*) AS n FROM setapi.tokens WHERE kind='session' AND secret_encrypted IS NOT NULL").fetchone()['n'] == 0

@@ -306,7 +306,24 @@ class TokenCreate(BaseModel):
 @router.get('/tokens')
 def tokens(user=Depends(admin)):
     with db.connection() as conn:
-        return {'data': conn.execute("SELECT t.id,t.name,t.prefix,t.scopes,t.admin,t.expires_at,t.revoked_at,t.user_id,u.tenant_id AS organization_id FROM setapi.tokens t JOIN setapi.users u ON u.id=t.user_id WHERE t.kind='api' ORDER BY t.created_at DESC LIMIT 200").fetchall()}
+        return {'data': conn.execute("SELECT t.id,t.name,t.prefix,t.scopes,t.admin,t.expires_at,t.revoked_at,t.user_id,u.tenant_id AS organization_id,u.org_admin,(t.secret_encrypted IS NOT NULL) AS revealable FROM setapi.tokens t JOIN setapi.users u ON u.id=t.user_id WHERE t.kind='api' ORDER BY t.created_at DESC LIMIT 200").fetchall()}
+
+
+@router.get('/tokens/{token_id}/secret')
+def reveal_token(token_id: UUID, response: Response, user=Depends(admin)):
+    """Show an API token again. Only the global administrator signed in to the panel; never through an API token."""
+    if user['kind'] != 'session':
+        raise HTTPException(403, 'Exibir tokens exige o login do administrador no painel')
+    with db.connection() as conn:
+        row = conn.execute("SELECT name,secret_encrypted FROM setapi.tokens WHERE id=%s AND kind='api' AND revoked_at IS NULL AND expires_at>now()", (token_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, 'Token not found')
+        if not row['secret_encrypted']:
+            raise HTTPException(409, 'Este token foi criado antes da opção de exibir. Crie um novo para poder exibi-lo depois.')
+        audit(conn, user, 'token.reveal', str(token_id), {'name': row['name']})
+    from cryptography.fernet import Fernet
+    response.headers['Cache-Control'] = 'no-store'
+    return {'id': token_id, 'name': row['name'], 'token': Fernet(settings().encryption_key.encode()).decrypt(row['secret_encrypted'].encode()).decode()}
 
 
 @router.post('/tokens', status_code=201)

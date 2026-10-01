@@ -174,12 +174,13 @@ async function usersPage(){
 async function tokensPage(){
  const owners=(await api('/users')).data.filter(u=>u.active&&(state.org?u.tenant_id===state.org:!u.tenant_id));
  action('＋ Criar token',()=>owners.length?tokenDialog(null,owners):toast('Crie primeiro um usuário nesta organização. O token age em nome dele.'));
- const rows=(await api('/tokens')).data.filter(t=>state.org?t.organization_id===state.org:!t.organization_id);$('#content').innerHTML='<div class="card">'+(rows.length?table(['NOME','USUÁRIO','PREFIXO','ACESSO','VALIDADE',''],rows.map(r=>`<tr><td>${esc(r.name)}</td><td>${esc((owners.find(u=>u.id===r.user_id)||{}).email||'—')}</td><td><code>${esc(r.prefix)}…</code></td><td>${r.admin?badge('Administrativo'):scopeSummary(r.scopes)}</td><td>${esc(expiryLabel(r.expires_at))}</td><td class="row-actions">${r.revoked_at?badge('Revogado',false):`<button class="danger" data-revoke="${esc(r.id)}">Revogar</button>`}</td></tr>`)):empty('Nenhum token de integração','Crie um token para conectar sua aplicação.'))+'</div><p class="help">Você também cria um token direto na página Usuários, junto com o usuário ou pelo botão Token da linha.</p>'+
+ const rows=(await api('/tokens')).data.filter(t=>state.org?t.organization_id===state.org:!t.organization_id);$('#content').innerHTML='<div class="card">'+(rows.length?table(['NOME','USUÁRIO','PREFIXO','ACESSO','VALIDADE',''],rows.map(r=>`<tr><td>${esc(r.name)}</td><td>${esc((owners.find(u=>u.id===r.user_id)||{}).email||'—')}</td><td><code>${esc(r.prefix)}…</code></td><td>${r.org_admin&&r.organization_id?badge('Administrador da organização'):r.admin?badge('Administrativo'):scopeSummary(r.scopes)}</td><td>${esc(expiryLabel(r.expires_at))}</td><td class="row-actions">${r.revoked_at?badge('Revogado',false):(r.revealable?`<button class="secondary" data-reveal="${esc(r.id)}">Exibir</button>`:`<button class="secondary" disabled title="Criado antes da opção de exibir. Crie um novo token para poder exibi-lo.">Exibir</button>`)+`<button class="danger" data-revoke="${esc(r.id)}">Revogar</button>`}</td></tr>`)):empty('Nenhum token de integração','Crie um token para conectar sua aplicação.'))+'</div><p class="help">Você também cria um token direto na página Usuários, junto com o usuário ou pelo botão Token da linha.</p>'+
   '<div class="card"><h3>Conectar uma IA por MCP</h3><p>Qualquer cliente MCP usa a API inteira: uma ferramenta para cada rota, com as mesmas permissões do token.</p>'+
   '<div class="split-row"><span>URL do servidor MCP</span><code>'+esc(location.origin+'/mcp')+'</code></div><div class="split-row"><span>Cabeçalho</span><code>Authorization: Bearer set_…</code></div>'+
   '<pre>'+esc(JSON.stringify({mcpServers:{setapi:{type:'http',url:location.origin+'/mcp',headers:{Authorization:'Bearer SEU_TOKEN'}}}},null,2))+'</pre>'+
-  '<p class="help">Para criar e alterar tabelas e campos pelo MCP, use o token administrativo de um administrador da organização. O token só enxerga o que a organização pode acessar.</p></div>';
+  '<p class="help">Para criar e alterar tabelas e campos pelo MCP, use um token de um administrador da organização. O token só enxerga o que a organização pode acessar.</p></div>';
  document.querySelectorAll('[data-revoke]').forEach(b=>b.onclick=async()=>{try{await api('/tokens/'+b.dataset.revoke,{method:'DELETE'});await render();toast('Token revogado.');}catch(e){toast(e.message);}});
+ document.querySelectorAll('[data-reveal]').forEach(b=>b.onclick=async()=>{try{const r=rows.find(x=>x.id===b.dataset.reveal),t=await api('/tokens/'+b.dataset.reveal+'/secret');showSecret(t,(owners.find(u=>u.id===r.user_id)||{}).email);}catch(e){toast(e.message);}});
 }
 async function storageDialog(){
  const google=await api('/integrations/google/config');
@@ -472,7 +473,7 @@ function scopeSummary(scopes){
  return keys.slice(0,3).map(t=>badge(t+' · '+PERM_LABELS[permissionMode(scopes[t])])).join(' ')+(keys.length>3?` <small>+${keys.length-3}</small>`:'');
 }
 function showSecret(token,who){
- modal('Token criado',`<p>Copie agora${who?' o token de '+esc(who):''}. O segredo não será exibido novamente.</p><div class="secret">${esc(token.token)}</div><p class="help">Envie no cabeçalho <code>Authorization: Bearer TOKEN</code>. Para revogar, use a página Tokens de acesso.</p>`,async()=>{},'Concluído');
+ modal('Token criado',`<p>Copie o token${who?' de '+esc(who):''}. O administrador da plataforma pode exibi-lo de novo em Tokens de acesso; cada exibição fica registrada em Atividade.</p><div class="secret">${esc(token.token)}</div><p class="help">Envie no cabeçalho <code>Authorization: Bearer TOKEN</code>. Para revogar, use a página Tokens de acesso.</p>`,async()=>{},'Concluído');
 }
 function tokenDialog(owner,owners){
  const organizations=state.organizations||[];

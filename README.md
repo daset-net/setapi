@@ -194,7 +194,7 @@ Para cada tabela, escolha o acesso: **Somente leitura**, **Somente escrita** (cr
 {"clientes": ["read", "create", "update", "delete"]}
 ```
 
-O segredo aparece uma única vez. Use-o **no backend da sua aplicação**. Um token de serviço incluído em JavaScript público pode ser copiado por qualquer visitante.
+Use o token **no backend da sua aplicação**. Para ver de novo um token de API, o administrador global clica em **Exibir** em Tokens de acesso (`GET /api/tokens/{id}/secret`). A rota só responde à sessão do painel, nunca a um token de API, e cada exibição fica registrada em Atividade. O SETAPI guarda o segredo criptografado com `SETAPI_ENCRYPTION_KEY`, e tokens de login nunca são guardados. Tokens criados antes desta versão não podem ser exibidos. Um token de serviço incluído em JavaScript público pode ser copiado por qualquer visitante.
 
 ```bash
 # Defina SETAPI_TOKEN no ambiente sem incluí-lo em arquivos versionados.
