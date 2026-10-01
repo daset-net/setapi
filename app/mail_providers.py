@@ -49,9 +49,13 @@ def agentmail_inboxes(key):
     return [inbox(i['inbox_id'], i.get('email') or i['inbox_id'], i.get('display_name')) for i in listed(data, 'inboxes')]
 
 
-def agentmail_send(key, config, to, subject, text, idempotency):
-    call('POST', 'https://api.agentmail.to/v0/inboxes/' + quote(config['inbox_id'], safe='@') + '/messages/send', key,
-         json={'to': [to], 'subject': subject, 'text': text})
+def agentmail_send(key, config, to, subject, text, idempotency, html=None, reply_to=None):
+    body = {'to': [to], 'subject': subject, 'text': text}
+    if html:
+        body['html'] = html
+    if reply_to:
+        body['reply_to'] = reply_to
+    call('POST', 'https://api.agentmail.to/v0/inboxes/' + quote(config['inbox_id'], safe='@') + '/messages/send', key, json=body)
 
 
 def openmail_inboxes(key):
@@ -59,7 +63,7 @@ def openmail_inboxes(key):
     return [inbox(i['id'], i['address'], i.get('displayName')) for i in listed(data, 'data')]
 
 
-def openmail_send(key, config, to, subject, text, idempotency):
+def openmail_send(key, config, to, subject, text, idempotency, html=None, reply_to=None):
     # The key makes a retried queue job deliver once.
     headers = {'Idempotency-Key': idempotency} if idempotency else {}
     call('POST', 'https://api.openmail.sh/v1/inboxes/' + quote(config['inbox_id'], safe='') + '/send', key,
@@ -71,7 +75,7 @@ def agmail_inboxes(key):
     return [inbox(i['id'], i['email'], i.get('display_name')) for i in listed(data, 'data', 'inboxes')]
 
 
-def agmail_send(key, config, to, subject, text, idempotency):
+def agmail_send(key, config, to, subject, text, idempotency, html=None, reply_to=None):
     call('POST', 'https://api.agmail.ai/v1/inboxes/' + quote(config['inbox_id'], safe='') + '/messages', key,
          json={'to': to, 'subject': subject, 'body': text})
 
@@ -87,5 +91,5 @@ def inboxes(provider, key):
     return PROVIDERS[provider]['inboxes'](key)
 
 
-def send(config, to, subject, text, idempotency=None):
-    PROVIDERS[config['provider']]['send'](config['api_key'], config, to, subject, text, idempotency)
+def send(config, to, subject, text, idempotency=None, html=None, reply_to=None):
+    PROVIDERS[config['provider']]['send'](config['api_key'], config, to, subject, text, idempotency, html=html, reply_to=reply_to)

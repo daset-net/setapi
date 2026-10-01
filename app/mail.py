@@ -20,6 +20,20 @@ def provider_config():
     return config
 
 
+def org_key(organization_id):
+    return 'mail:org:'+str(organization_id)
+
+
+def org_config(organization_id):
+    """An organization's own inbox, used only for what its apps send through /api/organization-mail."""
+    with db.connection() as conn:
+        row=conn.execute('SELECT value_encrypted FROM setapi.integrations WHERE name=%s',(org_key(organization_id),)).fetchone()
+    config=storage.decrypt(row['value_encrypted']) if row else None
+    if not config or config.get('provider') not in mail_providers.PROVIDERS or not config.get('inbox_id'):
+        return None
+    return config
+
+
 def smtp_ready():
     return bool(os.getenv('SETAPI_SMTP_HOST') and os.getenv('SETAPI_SMTP_FROM'))
 
@@ -38,8 +52,12 @@ def can_reach(conn,user):
     return bool(provider_config()) and is_panel_address(conn,user['email'])
 
 
-def queue(conn,to,subject,text):
-    conn.execute('INSERT INTO setapi.mail_queue(payload_encrypted) VALUES(%s)',(storage.encrypt({'to':to,'subject':subject,'text':text}),))
+def queue(conn,to,subject,text,organization_id=None,html=None,reply_to=None):
+    payload={'to':to,'subject':subject,'text':text}
+    if organization_id:
+        # Sent from the organization's own inbox to anyone; never through the platform inbox or SMTP.
+        payload.update({'organization_id':str(organization_id),'html':html,'reply_to':reply_to})
+    conn.execute('INSERT INTO setapi.mail_queue(payload_encrypted) VALUES(%s)',(storage.encrypt(payload),))
 
 
 def notify_admins(conn,subject,text):
@@ -72,13 +90,16 @@ def send_smtp(payload):
 
 def send_one():
     api=provider_config()
-    if not api and not smtp_ready():return
     with db.connection() as conn:
         job=conn.execute('SELECT * FROM setapi.mail_queue WHERE attempts<5 AND next_attempt<=now() ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED').fetchone()
         if not job:return
         try:
             payload=storage.decrypt(job['payload_encrypted'])
-            if api and is_panel_address(conn,payload['to']):
+            if payload.get('organization_id'):
+                own=org_config(payload['organization_id'])
+                if own:
+                    mail_providers.send(own,payload['to'],payload['subject'],payload['text'],'setapi-mail-'+str(job['id']),html=payload.get('html'),reply_to=payload.get('reply_to'))
+            elif api and is_panel_address(conn,payload['to']):
                 # The panel provider takes precedence, and only ever writes to panel users.
                 mail_providers.send(api,payload['to'],payload['subject'],payload['text'],'setapi-mail-'+str(job['id']))
             elif smtp_ready():

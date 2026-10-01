@@ -2,18 +2,18 @@
 const $ = s => document.querySelector(s);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const state = {user:null, tables:[], page:'overview', table:null, offset:0, search:'', searchField:'', socket:null, org:null};
-const titles = {organizations:['Organizações','Cada organização tem as próprias tabelas, usuários, tokens e storage.'],security:['Segurança da conta','Senha, autenticação em duas etapas e sessões.'],overview:['Visão geral','Acompanhe a plataforma e as organizações.'],tables:['Tabelas e API','Estruture seus dados. A API acompanha cada alteração.'],users:['Usuários','Controle quem pode acessar esta organização.'],admins:['Administradores','Contas globais que administram a plataforma.'],tokens:['Tokens de acesso','Permissões explícitas para cada integração.'],storages:['Storage e arquivos','Conecte os provedores desta organização e organize os arquivos.'],backups:['Backups','Cópias criptografadas, agendadas e com retenção de 1 a 7 cópias.'],audit:['Atividade','Histórico das operações realizadas pela API.'],export:['Exportar dados','Baixe todos os registros da organização em XLSX, CSV ou JSON.'],settings:['Configurações','Personalização, e-mail, aplicativo Google e opções avançadas da plataforma.']};
+const titles = {mail:['E-mail da organização','A inbox de onde os aplicativos desta organização enviam e-mails para qualquer pessoa.'],organizations:['Organizações','Cada organização tem as próprias tabelas, usuários, tokens e storage.'],security:['Segurança da conta','Senha, autenticação em duas etapas e sessões.'],overview:['Visão geral','Acompanhe a plataforma e as organizações.'],tables:['Tabelas e API','Estruture seus dados. A API acompanha cada alteração.'],users:['Usuários','Controle quem pode acessar esta organização.'],admins:['Administradores','Contas globais que administram a plataforma.'],tokens:['Tokens de acesso','Permissões explícitas para cada integração.'],storages:['Storage e arquivos','Conecte os provedores desta organização e organize os arquivos.'],backups:['Backups','Cópias criptografadas, agendadas e com retenção de 1 a 7 cópias.'],audit:['Atividade','Histórico das operações realizadas pela API.'],export:['Exportar dados','Baixe todos os registros da organização em XLSX, CSV ou JSON.'],settings:['Configurações','Personalização, e-mail, aplicativo Google e opções avançadas da plataforma.']};
 function pageTitle(){return titles[state.page==='users'&&state.user.admin&&!state.org?'admins':state.page];}
 function scoped(path){
  // The administrator's selected organization applies to tables, records and activity, as in the API.
- if(!state.user||!state.user.admin||!state.org||!/^\/(tables|data|audit)(\/|\?|$)/.test(path))return path;
+ if(!state.user||!state.user.admin||!state.org||!/^\/(tables|data|audit|organization-mail)(\/|\?|$)/.test(path))return path;
  return path+(path.includes('?')?'&':'?')+'organization_id='+encodeURIComponent(state.org);
 }
 function savedOrg(){try{return localStorage.getItem('setapi.org');}catch{return null;}}
 function saveOrg(id){try{id?localStorage.setItem('setapi.org',id):localStorage.removeItem('setapi.org');}catch{}}
 // The administrator's menu follows the switcher: the platform itself, or everything that belongs to one organization.
 const PLATFORM_PAGES=['overview','organizations','settings'];
-const ORG_PAGES=['tables','tokens','storages','export'];
+const ORG_PAGES=['tables','tokens','storages','mail','export'];
 function canBuild(t){return state.user.admin||(state.user.org_admin&&(!t||!!t.organization_id));}
 function inOrg(){return !!(state.user&&(state.user.admin?state.org:state.user.organization_id));}
 function orgLabel(){const id=state.user.admin?state.org:state.user.organization_id;return id?((state.organizations||[]).find(o=>o.id===id)||{}).name||'Organização':'Plataforma';}
@@ -82,7 +82,7 @@ async function render(){
  if(state.socket && state.subscribed!==JSON.stringify(state.tables.map(t=>t.name)))connect();
  const [title,description]=pageTitle();$('#page-title').textContent=title;$('#page-description').textContent=description;$('#breadcrumb').textContent=orgLabel()+' / '+title;$('#page-actions').innerHTML='';
  document.querySelectorAll('[data-page]').forEach(b=>b.classList.toggle('active',b.dataset.page===state.page));
- const handlers={overview:overview,tables:tablesPage,users:usersPage,tokens:tokensPage,storages:storagesPage,backups:backupsPage,audit:auditPage,security:securityPage,organizations:organizationsPage,settings:settingsPage,export:exportPage};await handlers[state.page]();
+ const handlers={overview:overview,tables:tablesPage,users:usersPage,tokens:tokensPage,storages:storagesPage,backups:backupsPage,audit:auditPage,security:securityPage,organizations:organizationsPage,settings:settingsPage,export:exportPage,mail:orgMailPage};await handlers[state.page]();
 }
 function action(label,fn){const b=document.createElement('button');b.textContent=label;b.onclick=fn;$('#page-actions').append(b);}
 async function overview(){
@@ -396,10 +396,23 @@ function googleDialog(google){
   }catch(err){status.textContent=err instanceof SyntaxError?'Este arquivo não é um JSON válido.':err.message;status.classList.add('warn');}
  };
 }
-function mailDialog(cfg,provs){
+async function orgMailPage(){
+ const [cfg,provs]=await Promise.all([api('/organization-mail/config'),api('/organization-mail/providers')]);
+ const label=id=>(provs.data.find(p=>p.id===id)||{}).label||id;
+ const row=(k,v)=>`<div class="split-row"><span>${esc(k)}</span><strong>${esc(v)}</strong></div>`;
+ $('#content').innerHTML='<div class="settings-grid"><div class="card"><div class="card-head"><h3>Inbox de '+esc(orgLabel())+'</h3>'+(cfg.configured?badge(label(cfg.provider)):badge('Não configurado',false))+'</div>'+
+  (cfg.configured?row('Enviado por',cfg.sender)+row('API key',cfg.key_hint):'<p>Conecte AgentMail, OpenMail ou AGMail com a API key da organização. Basta colar a chave e escolher a inbox.</p>')+
+  '<div class="toolbar card-actions"><button id="org-mail-edit">'+(cfg.configured?'Alterar e-mail':'＋ Configurar e-mail')+'</button>'+(cfg.configured?'<button class="secondary" id="org-mail-test">Enviar teste para mim</button><button class="danger" id="org-mail-remove">Remover</button>':'')+'</div></div>'+
+  '<div class="card"><div class="card-head"><h3>Como os aplicativos enviam</h3></div><p>Com um token de administrador da organização:</p><pre>POST /api/organization-mail/send\n{"to": ["cliente@exemplo.com"],\n "subject": "Assunto",\n "text": "Texto puro",\n "html": "&lt;p&gt;Opcional&lt;/p&gt;",\n "reply_to": "opcional@exemplo.com"}</pre><p class="help">A mensagem entra na fila e é entregue em segundos, com novas tentativas se o provedor falhar. Limite de '+300+' envios por hora. A chave fica criptografada e nunca volta ao navegador.</p></div></div>';
+ $('#org-mail-edit').onclick=()=>mailDialog(cfg,provs.data,'/organization-mail');
+ if(!cfg.configured)return;
+ $('#org-mail-test').onclick=async e=>{e.target.disabled=true;try{const r=await api('/organization-mail/test',{method:'POST'});toast('Teste enviado para '+r.to+'.');}catch(err){toast(err.message);}finally{e.target.disabled=false;}};
+ $('#org-mail-remove').onclick=()=>modal('Remover e-mail','<p>Os aplicativos desta organização deixam de conseguir enviar e-mails.</p>',async()=>{await api('/organization-mail/config',{method:'DELETE'});toast('E-mail da organização removido.');},'Remover');
+}
+function mailDialog(cfg,provs,base='/mail'){
  modal('Configurar e-mail','<label>Provedor<select name="provider" id="mail-provider">'+provs.map(p=>`<option value="${esc(p.id)}" ${p.id===cfg.provider?'selected':''}>${esc(p.label)}</option>`).join('')+'</select></label>'+
   '<label>API key<input name="api_key" id="mail-key" type="password" autocomplete="off" spellcheck="false"></label><div id="mail-inboxes"></div><p class="help">A chave é criptografada no banco e nunca volta ao navegador.</p>',
-  async f=>{const r=await api('/mail/config',{method:'PUT',body:{provider:f.get('provider'),api_key:f.get('api_key')||'',inbox_id:f.get('inbox_id')||''}});toast('E-mail configurado: '+r.sender+'.');},'Salvar');
+  async f=>{const r=await api(base+'/config',{method:'PUT',body:{provider:f.get('provider'),api_key:f.get('api_key')||'',inbox_id:f.get('inbox_id')||''}});toast('E-mail configurado: '+r.sender+'.');},'Salvar');
  const provider=$('#mail-provider'),key=$('#mail-key'),box=$('#mail-inboxes'),submit=$('#modal-submit');let timer,seq=0;
  const saved=()=>cfg.configured&&provider.value===cfg.provider;
  async function load(){
@@ -407,7 +420,7 @@ function mailDialog(cfg,provs){
   if(!key.value.trim()&&!saved()){box.innerHTML='';return;}
   box.innerHTML='<p class="help">Buscando as inboxes desta chave…</p>';
   try{
-   const list=(await api('/mail/discover',{method:'POST',body:{provider:provider.value,api_key:key.value.trim()}})).data;
+   const list=(await api(base+'/discover',{method:'POST',body:{provider:provider.value,api_key:key.value.trim()}})).data;
    if(current!==seq)return;
    if(!list.length){box.innerHTML='<p class="help">Essa chave ainda não tem nenhuma inbox. Crie uma no provedor e cole a chave de novo.</p>';return;}
    box.innerHTML='<label>Inbox que envia<select name="inbox_id">'+list.map(i=>`<option value="${esc(i.id)}" ${i.id===cfg.inbox_id?'selected':''}>${esc((i.name?i.name+' — ':'')+i.email)}</option>`).join('')+'</select></label>';

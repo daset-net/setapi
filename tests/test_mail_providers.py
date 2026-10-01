@@ -209,3 +209,62 @@ def test_outdated_saved_config_counts_as_not_configured(admin_client, provider):
                      (storage.encrypt({'provider': 'resend', 'api_key': 'k', 'sender': 'a@b.com'}),))
     assert admin_client.get('/api/mail/config').json()['configured'] is False
     assert not mail.ready()
+
+
+def org_admin_headers(admin_client):
+    org = admin_client.post('/api/organizations', json={'name': 'Org ' + uuid4().hex}).json()
+    user = admin_client.post('/api/users', json={'email': uuid4().hex[:8] + '@org.test', 'password': 'Member-password-123', 'tenant_id': org['id'], 'org_admin': True})
+    assert user.status_code == 201, user.text
+    token = admin_client.post('/api/tokens', json={'name': 'app', 'user_id': user.json()['id']})
+    assert token.status_code in (200, 201), token.text
+    return org, user.json(), {'Authorization': 'Bearer ' + token.json()['token']}
+
+
+def test_organization_inbox_sends_to_anyone_through_its_own_key(admin_client, provider):
+    routes, calls = provider
+    agentmail(routes)
+    org, user, h = org_admin_headers(admin_client)
+    api = TestClient(app)
+    try:
+        assert api.get('/api/organization-mail/config', headers=h).json() == {'configured': False}
+        assert api.post('/api/organization-mail/send', headers=h, json={'to': ['a@b.com'], 'subject': 's', 'text': 't'}).status_code == 409
+        assert api.put('/api/organization-mail/config', headers=h, json={'provider': 'agentmail', 'api_key': KEY, 'inbox_id': 'forjado@agentmail.to'}).status_code == 422
+        r = api.put('/api/organization-mail/config', headers=h, json={'provider': 'agentmail', 'api_key': KEY, 'inbox_id': 'escola@agentmail.to'})
+        assert r.status_code == 200, r.text
+        assert api.get('/api/organization-mail/config', headers=h).json()['sender'] == 'escola@agentmail.to'
+        # The platform inbox stays unconfigured: the organization's inbox is separate.
+        assert mail.provider_config() is None
+        r = api.post('/api/organization-mail/send', headers=h, json={'to': ['Cliente@Fora.com', 'cliente@fora.com'], 'subject': 'Oi', 'text': 'Texto', 'html': '<p>Oi</p>', 'reply_to': 'dono@loja.com'})
+        assert r.status_code == 202 and r.json() == {'queued': 1}
+        assert api.post('/api/organization-mail/send', headers=h, json={'to': ['não é e-mail'], 'subject': 's', 'text': 't'}).status_code == 422
+        [job] = queued()
+        assert job['to'] == 'cliente@fora.com' and job['organization_id'] == org['id']
+        calls.clear()
+        mail.send_one()
+        assert queued() == []
+        method, url, kwargs = calls[-1]
+        assert url.endswith('/inboxes/escola@agentmail.to/messages/send')
+        assert kwargs['json'] == {'to': ['cliente@fora.com'], 'subject': 'Oi', 'text': 'Texto', 'html': '<p>Oi</p>', 'reply_to': 'dono@loja.com'}
+        assert kwargs['headers']['Authorization'] == 'Bearer ' + KEY
+        # Another organization's administrator cannot see or use it; members cannot either.
+        _, _, other = org_admin_headers(admin_client)
+        assert api.get('/api/organization-mail/config', headers=other).json() == {'configured': False}
+        assert api.get(f"/api/organization-mail/config?organization_id={org['id']}", headers=other).status_code == 404
+        # The global administrator picks the organization explicitly.
+        assert admin_client.get('/api/organization-mail/config').status_code == 422
+        assert admin_client.get(f"/api/organization-mail/config?organization_id={org['id']}").json()['configured'] is True
+        assert api.delete('/api/organization-mail/config', headers=h).status_code == 204
+        assert api.get('/api/organization-mail/config', headers=h).json() == {'configured': False}
+    finally:
+        with db.connection() as conn:
+            conn.execute("DELETE FROM setapi.integrations WHERE name LIKE 'mail:org:%'")
+
+
+def test_organization_queue_is_dropped_when_its_inbox_is_removed(admin_client, provider):
+    routes, calls = provider
+    org, _, _ = org_admin_headers(admin_client)
+    with db.connection() as conn:
+        mail.queue(conn, 'x@y.com', 's', 't', organization_id=org['id'])
+    calls.clear()
+    mail.send_one()
+    assert queued() == [] and calls == []
